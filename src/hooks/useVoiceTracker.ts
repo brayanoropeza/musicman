@@ -230,11 +230,18 @@ export function useVoiceTracker({
 
       if (!match) return;
 
-      // Speed brake: prevent bouncing two lines ahead inside < 650ms unless skipping instrumental
+      // Speed brake: prevent bouncing two lines ahead inside < 650ms for normal local tracking,
+      // but allow immediate jump when global stanza resync detects the teleprompter fell behind!
       const msOnCurrentLine = Date.now() - lineEnteredTimestampRef.current;
       const lineDiff = match.matchedLineIndex - activeLineRef.current;
-      if (lineDiff > 1 && msOnCurrentLine < 650) {
+      if (!match.isResync && lineDiff > 1 && msOnCurrentLine < 650) {
         return;
+      }
+
+      if (match.isResync && match.sectionName && lineDiff !== 0) {
+        setActiveEngineNote(
+          `Resincronizado automáticamente a: ${match.sectionName}`
+        );
       }
 
       lastWordMatchTimestampRef.current = Date.now();
@@ -574,9 +581,9 @@ export function useVoiceTracker({
           }
         }
 
-        // Compare ONLY the freshest phrase (last 2 finalized words + current interim)
+        // Compare finalized tail (4 words) + current interim so Tier 2 global resync has full stanza context
         const freshPhrase = [
-          ...finalTailRef.current.slice(-2),
+          ...finalTailRef.current.slice(-4),
           latestInterim,
         ]
           .join(" ")

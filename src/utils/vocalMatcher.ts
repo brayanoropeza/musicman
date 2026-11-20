@@ -87,14 +87,91 @@ export interface MatchResult {
   matchedLineIndex: number;
   wordProgress: number; // 0..1 progress across words in the matched line
   confidence: number;
+  isResync?: boolean;
+  sectionName?: string;
+}
+
+interface LineEval {
+  idx: number;
+  totalScore: number;
+  contentHits: number;
+  totalHits: number;
+  inOrderHits: number;
+  progress: number;
+  coverageRatio: number;
+}
+
+function evaluateCandidateLine(
+  heardWords: string[],
+  flatLines: FlatSongLine[],
+  idx: number
+): LineEval | null {
+  const item = flatLines[idx];
+  if (!item || item.line.isInstrumental || item.line.isTablature) {
+    return null;
+  }
+
+  const lineWords = tokenizeNormalized(item.line.lyrics);
+  if (lineWords.length === 0) return null;
+
+  let totalScore = 0;
+  let contentHits = 0;
+  let totalHits = 0;
+  let lastPos = -1;
+  let inOrderHits = 0;
+  const matchedLinePositions = new Set<number>();
+
+  for (const hw of heardWords) {
+    let bestSim = 0;
+    let bestPos = -1;
+
+    for (let lwIdx = 0; lwIdx < lineWords.length; lwIdx++) {
+      const sim = wordSimilarity(hw, lineWords[lwIdx]);
+      if (sim >= 0.74 && sim > bestSim) {
+        bestSim = sim;
+        bestPos = lwIdx;
+      }
+    }
+
+    if (bestPos !== -1) {
+      if (!matchedLinePositions.has(bestPos)) {
+        matchedLinePositions.add(bestPos);
+        totalHits++;
+        const isContent =
+          !STOPWORDS.has(lineWords[bestPos]) && lineWords[bestPos].length >= 3;
+        if (isContent) contentHits++;
+        totalScore += bestSim * (isContent ? 1.25 : 0.6);
+      }
+
+      if (bestPos >= lastPos) {
+        inOrderHits++;
+        lastPos = bestPos;
+      }
+    }
+  }
+
+  if (totalHits === 0) return null;
+
+  const progress =
+    lastPos >= 0 ? Math.min(1, (lastPos + 1) / lineWords.length) : 0;
+  const coverageRatio = matchedLinePositions.size / lineWords.length;
+
+  return {
+    idx,
+    totalScore,
+    contentHits,
+    totalHits,
+    inOrderHits,
+    progress,
+    coverageRatio,
+  };
 }
 
 /**
- * Strict anti-runaway matcher:
- * - Anchors strongly to the current line while words in it are still being sung.
- * - Only advances +1 line when words from the immediate next sung line appear (or current line finishes).
- * - Only jumps further ahead (e.g. skipping an instrumental solo or chorus jump) if >= 2 distinct
- *   meaningful content words match in order with high confidence.
+ * Two-tier lyric matcher:
+ * 1. Local tracking (current & next 2 sung lines) for smooth line-by-line progression.
+ * 2. Global stanza resync across the ENTIRE song when the singer is clearly on another
+ *    verse/chorus (whether ahead because the teleprompter fell behind, or repeating a section).
  */
 export function matchTranscriptToLine(
   recentPhrase: string,
@@ -104,96 +181,67 @@ export function matchTranscriptToLine(
   const heardWords = tokenizeNormalized(recentPhrase);
   if (heardWords.length === 0 || flatLines.length === 0) return null;
 
-  // Keep only the freshest 6 words so old lines never pull or push erratically
-  const freshHeard = heardWords.slice(-6);
+  const freshLocalHeard = heardWords.slice(-6);
+  const resyncWindowHeard = heardWords.slice(-10);
 
-  // Build candidate indices: current line, next sung lines (+1, +2, and at most +3 for post-solo skip)
-  const candidates: number[] = [];
+  // --- Tier 1: Local window (current + next 2 sung lines) ---
+  const localCandidates: number[] = [];
   if (currentLineIndex >= 0 && currentLineIndex < flatLines.length) {
-    candidates.push(currentLineIndex);
+    localCandidates.push(currentLineIndex);
   }
   let sungAhead = 0;
   for (
     let i = currentLineIndex + 1;
-    i < flatLines.length && sungAhead < 4;
+    i < flatLines.length && sungAhead < 3;
     i++
   ) {
     if (!flatLines[i].line.isInstrumental && !flatLines[i].line.isTablature) {
-      candidates.push(i);
+      localCandidates.push(i);
       sungAhead++;
     }
   }
 
-  let bestResult: MatchResult | null = null;
-  let bestWeightedScore = 0;
+  const currentEval = evaluateCandidateLine(
+    freshLocalHeard,
+    flatLines,
+    currentLineIndex
+  );
 
-  // Evaluate current line first to check if singer is still clearly on this line
-  const evalLine = (idx: number) => {
-    const item = flatLines[idx];
-    if (!item || item.line.isInstrumental || item.line.isTablature) {
-      return null;
-    }
-
-    const lineWords = tokenizeNormalized(item.line.lyrics);
-    if (lineWords.length === 0) return null;
-
-    let totalScore = 0;
-    let contentHits = 0;
-    let totalHits = 0;
-    let lastPos = -1;
-    let inOrderHits = 0;
-
-    for (const hw of freshHeard) {
-      let bestSim = 0;
-      let bestPos = -1;
-
-      for (let lwIdx = 0; lwIdx < lineWords.length; lwIdx++) {
-        const sim = wordSimilarity(hw, lineWords[lwIdx]);
-        if (sim >= 0.74 && sim > bestSim) {
-          bestSim = sim;
-          bestPos = lwIdx;
-        }
-      }
-
-      if (bestPos !== -1) {
-        totalHits++;
-        const isContent = !STOPWORDS.has(lineWords[bestPos]) && lineWords[bestPos].length >= 3;
-        if (isContent) contentHits++;
-        totalScore += bestSim * (isContent ? 1.25 : 0.65);
-
-        if (bestPos >= lastPos) {
-          inOrderHits++;
-          lastPos = bestPos;
-        }
-      }
-    }
-
-    if (totalHits === 0) return null;
-
-    const progress =
-      lastPos >= 0 ? Math.min(1, (lastPos + 1) / lineWords.length) : 0;
-
-    return {
-      idx,
-      totalScore,
-      contentHits,
-      totalHits,
-      inOrderHits,
-      progress,
-      lineWordCount: lineWords.length,
-    };
-  };
-
-  const currentEval = evalLine(currentLineIndex);
-
-  // If the singer's freshest last 2 words match the current line and haven't finished it,
-  // lock onto the current line so repeated chorus words ahead NEVER yank the cursor away!
+  // Keep locked on current line while actively singing through it
   if (
     currentEval &&
     currentEval.totalHits >= 1 &&
     currentEval.progress < 0.88 &&
     currentEval.contentHits >= 1
   ) {
+    // Check if another stanza further away matches MUCH more strongly across the 10-word window
+    // (handles cases where 1 common word happened to match the old line while user is singing a new verse)
+    let strongResyncHit: MatchResult | null = null;
+    if (resyncWindowHeard.length >= 4 && currentEval.contentHits <= 1) {
+      let bestGlobalScore = currentEval.totalScore + 1.5;
+      for (let i = 0; i < flatLines.length; i++) {
+        if (i === currentLineIndex) continue;
+        const gEval = evaluateCandidateLine(resyncWindowHeard, flatLines, i);
+        if (
+          gEval &&
+          gEval.contentHits >= 3 &&
+          gEval.inOrderHits >= 2 &&
+          gEval.totalScore > bestGlobalScore
+        ) {
+          bestGlobalScore = gEval.totalScore;
+          strongResyncHit = {
+            matchedLineIndex: gEval.idx,
+            wordProgress: gEval.progress,
+            confidence: Math.min(1, gEval.totalScore / 3),
+            isResync: true,
+            sectionName: flatLines[gEval.idx].sectionName,
+          };
+        }
+      }
+    }
+
+    if (strongResyncHit) return strongResyncHit;
+
     return {
       matchedLineIndex: currentLineIndex,
       wordProgress: currentEval.progress,
@@ -201,39 +249,34 @@ export function matchTranscriptToLine(
     };
   }
 
-  for (let orderIdx = 0; orderIdx < candidates.length; orderIdx++) {
-    const idx = candidates[orderIdx];
-    const res = idx === currentLineIndex ? currentEval : evalLine(idx);
+  let bestLocal: MatchResult | null = null;
+  let bestLocalScore = 0;
+
+  for (let orderIdx = 0; orderIdx < localCandidates.length; orderIdx++) {
+    const idx = localCandidates[orderIdx];
+    const res =
+      idx === currentLineIndex
+        ? currentEval
+        : evaluateCandidateLine(freshLocalHeard, flatLines, idx);
     if (!res) continue;
 
-    const sungDistance = orderIdx; // 0 = current, 1 = next sung line, 2+ = further ahead
-
-    // Strict gate against jumping ahead on 1 accidental word
-    if (sungDistance === 0) {
+    if (orderIdx === 0) {
       if (res.totalHits < 1) continue;
-    } else if (sungDistance === 1) {
-      // To advance to the very next line: require either >= 2 matching words OR 1 strong content word
+    } else if (orderIdx === 1) {
       if (res.totalHits < 2 && res.contentHits < 1) continue;
-      // If current line just started (< 35% progress) and has matches, don't jump early on just 1 word
-      if (
-        currentEval &&
-        currentEval.progress < 0.35 &&
-        res.contentHits < 2
-      ) {
+      if (currentEval && currentEval.progress < 0.35 && res.contentHits < 2) {
         continue;
       }
     } else {
-      // Skipping 2+ sung lines ahead requires strong proof (>= 2 distinct content words in order)
       if (res.contentHits < 2 || res.inOrderHits < 2) continue;
     }
 
-    const distanceWeight =
-      sungDistance === 0 ? 1.25 : sungDistance === 1 ? 1.05 : 0.72;
-    const weighted = (res.totalScore + res.inOrderHits * 0.2) * distanceWeight;
+    const weight = orderIdx === 0 ? 1.22 : orderIdx === 1 ? 1.05 : 0.85;
+    const weighted = (res.totalScore + res.inOrderHits * 0.2) * weight;
 
-    if (weighted > bestWeightedScore) {
-      bestWeightedScore = weighted;
-      bestResult = {
+    if (weighted > bestLocalScore) {
+      bestLocalScore = weighted;
+      bestLocal = {
         matchedLineIndex: idx,
         wordProgress: res.progress,
         confidence: Math.min(1, res.totalScore / 2.5),
@@ -241,5 +284,41 @@ export function matchTranscriptToLine(
     }
   }
 
-  return bestResult;
+  if (bestLocal) return bestLocal;
+
+  // --- Tier 2: Global Stanza Resync (when teleprompter fell behind or singer jumped sections) ---
+  let bestResync: MatchResult | null = null;
+  let bestResyncScore = 0;
+
+  for (let idx = 0; idx < flatLines.length; idx++) {
+    const res = evaluateCandidateLine(resyncWindowHeard, flatLines, idx);
+    if (!res) continue;
+
+    // Require clear multi-word proof to jump anywhere in the song
+    const strongEnough =
+      (res.contentHits >= 2 && res.inOrderHits >= 2) ||
+      (res.contentHits >= 2 && res.coverageRatio >= 0.45) ||
+      (res.totalHits >= 3 && res.inOrderHits >= 2);
+
+    if (!strongEnough) continue;
+
+    // Prefer lines ahead of current position over earlier identical choruses
+    const forwardBonus = idx > currentLineIndex ? 1.18 : 0.92;
+    const score =
+      (res.totalScore + res.inOrderHits * 0.25 + res.coverageRatio) *
+      forwardBonus;
+
+    if (score > bestResyncScore) {
+      bestResyncScore = score;
+      bestResync = {
+        matchedLineIndex: idx,
+        wordProgress: res.progress,
+        confidence: Math.min(1, res.totalScore / 2.8),
+        isResync: true,
+        sectionName: flatLines[idx].sectionName,
+      };
+    }
+  }
+
+  return bestResync;
 }
