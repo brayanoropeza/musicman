@@ -68,11 +68,11 @@ export function MicCalibrationView({
         <div className="flex items-center justify-between gap-4">
           <div>
             <h1 className="font-display text-2xl font-bold text-slate-900 dark:text-zinc-50">
-              Calibración de Micrófono e Instrumento
+              Calibración de Micrófono, Nota e Instrumento
             </h1>
             <p className="mt-1 text-sm text-slate-600 dark:text-zinc-400">
-              Ajusta el filtro para que el rasgueo de tu guitarra o piano no
-              dispare cambios de línea por error mientras cantas ·{" "}
+              Ajusta el filtro para que el rasgueo no adelante la letra y
+              verifica la detección de tu nota cantada ·{" "}
               <span className="font-medium text-slate-800 dark:text-zinc-200">
                 {permissionLabel}
               </span>
@@ -125,17 +125,17 @@ export function MicCalibrationView({
           </div>
         </section>
 
-        {/* Step 2: Live Noise Gate Calibration */}
+        {/* Step 2: Live Noise Gate & Pitch Calibration */}
         <section className="rounded-xl border border-slate-200 dark:border-zinc-800 bg-white dark:bg-zinc-900/60 p-6 space-y-5">
           <div className="flex flex-wrap items-center justify-between gap-4">
             <div>
               <h2 className="font-display text-base font-semibold text-slate-900 dark:text-zinc-100">
-                2. Activa el micrófono y ajusta el umbral de voz
+                2. Prueba tu instrumento y tu nota vocal
               </h2>
               <p className="mt-1 text-xs text-slate-500 dark:text-zinc-400">
-                Al pulsar el botón el navegador pedirá permiso real del
-                micrófono. Toca solo el instrumento y coloca el umbral por
-                encima de la barra gris/ámbar.
+                Toca solo el instrumento primero: la barra gris/ámbar debe
+                quedar debajo del umbral. Al cantar una nota, se iluminará en
+                verde mostrando la nota afinada.
               </p>
             </div>
             <button
@@ -167,14 +167,15 @@ export function MicCalibrationView({
             </p>
           )}
 
-          {/* Dual Meter */}
           <div className="space-y-3">
-            <div className="flex items-center justify-between text-xs text-slate-600 dark:text-zinc-400">
+            <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-600 dark:text-zinc-400">
               <span>
-                Señal total (gris):{" "}
+                Señal total:{" "}
                 <strong className="font-mono">{tracker.rawLevel}%</strong> ·
-                Banda vocal (color):{" "}
-                <strong className="font-mono">{tracker.vocalLevel}%</strong>
+                Banda vocal:{" "}
+                <strong className="font-mono">{tracker.vocalLevel}%</strong> ·
+                Claridad tonal:{" "}
+                <strong className="font-mono">{tracker.pitchClarity}%</strong>
               </span>
               <span
                 className={`font-semibold ${
@@ -184,8 +185,10 @@ export function MicCalibrationView({
                 }`}
               >
                 {tracker.isListening
-                  ? tracker.isVoiceActive
-                    ? "Voz activa"
+                  ? tracker.detectedNote
+                    ? `Cantando ${tracker.detectedNote} (${tracker.detectedHz} Hz)`
+                    : tracker.isVoiceActive
+                    ? "Voz detectada"
                     : "Esperando voz"
                   : "Micrófono apagado"}
               </span>
@@ -234,41 +237,41 @@ export function MicCalibrationView({
         {/* Step 3: Tracking Engine & Live Phrase Test */}
         <section className="rounded-xl border border-slate-200 dark:border-zinc-800 bg-white dark:bg-zinc-900/60 p-6 space-y-4">
           <h2 className="font-display text-base font-semibold text-slate-900 dark:text-zinc-100">
-            3. Motor de reconocimiento y prueba rápida
+            3. Motor de seguimiento y prueba de coincidencia
           </h2>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
             <button
               type="button"
-              onClick={() => onChangeMode("voice_local")}
-              disabled={!tracker.isSpeechSupported}
-              className={`p-3 rounded-lg border text-left cursor-pointer disabled:opacity-40 ${
-                mode === "voice_local"
+              onClick={() => onChangeMode("hybrid")}
+              className={`p-3 rounded-lg border text-left cursor-pointer ${
+                mode === "hybrid"
                   ? "border-amber-500 bg-amber-500/10"
                   : "border-slate-200 dark:border-zinc-800"
               }`}
             >
               <div className="text-sm font-semibold text-slate-900 dark:text-zinc-100">
-                Palabras en Vivo
+                Híbrido (Recomendado)
               </div>
               <p className="mt-1 text-xs text-slate-500 dark:text-zinc-400">
-                Coincidencia exacta de palabras (Chrome, Edge, Safari).
+                Combina palabras + nota musical cantada + freno de ritmo BPM.
               </p>
             </button>
             <button
               type="button"
-              onClick={() => onChangeMode("vocal_cadence")}
-              className={`p-3 rounded-lg border text-left cursor-pointer ${
-                mode === "vocal_cadence"
+              onClick={() => onChangeMode("words_only")}
+              disabled={!tracker.isSpeechSupported}
+              className={`p-3 rounded-lg border text-left cursor-pointer disabled:opacity-40 ${
+                mode === "words_only"
                   ? "border-amber-500 bg-amber-500/10"
                   : "border-slate-200 dark:border-zinc-800"
               }`}
             >
               <div className="text-sm font-semibold text-slate-900 dark:text-zinc-100">
-                Voz DSP (Universal)
+                Solo Palabras
               </div>
               <p className="mt-1 text-xs text-slate-500 dark:text-zinc-400">
-                Funciona en Opera, Firefox y offline: avanza al detectar tu voz.
+                Avanza únicamente al reconocer tus palabras exactas.
               </p>
             </button>
             <button
@@ -307,8 +310,8 @@ export function MicCalibrationView({
 
           <div className="pt-2 border-t border-slate-200 dark:border-zinc-800 space-y-2">
             <p className="text-xs text-slate-500 dark:text-zinc-400">
-              Prueba el algoritmo de coincidencia fonética con la canción actual
-              (ej. escribe un fragmento de: <em>“{sampleLine}”</em>):
+              Prueba la coincidencia fonética con la canción actual (ej. escribe
+              un fragmento de: <em>“{sampleLine}”</em>):
             </p>
             <form
               onSubmit={(e) => {

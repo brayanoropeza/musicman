@@ -44,8 +44,8 @@ export type InstrumentProfile =
   | "vocals_only";
 
 export type TrackingMode =
-  | "voice_local"
-  | "vocal_cadence"
+  | "hybrid"
+  | "words_only"
   | "voice_ai"
   | "auto_tempo";
 

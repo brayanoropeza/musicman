@@ -2,8 +2,10 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   FlatSongLine,
   InstrumentProfile,
+  NotationSystem,
   TrackingMode,
 } from "../types/song";
+import { detectVocalPitch } from "../utils/pitchDetector";
 import { matchTranscriptToLine } from "../utils/vocalMatcher";
 
 interface SpeechRecognitionAlternativeLike {
@@ -62,6 +64,7 @@ export interface UseVoiceTrackerOptions {
   onAdvanceToLine: (lineIndex: number, wordProgress: number) => void;
   language: "es" | "en";
   bpm: number;
+  notation: NotationSystem;
   mode: TrackingMode;
   instrumentProfile: InstrumentProfile;
   noiseGate: number; // 0..100
@@ -70,10 +73,14 @@ export interface UseVoiceTrackerOptions {
 export interface VoiceTrackerState {
   isListening: boolean;
   isSpeechSupported: boolean;
+  isWordEngineActive: boolean;
   permissionState: "prompt" | "granted" | "denied" | "unknown";
   activeEngineNote: string | null;
   rawLevel: number; // 0..100 total mic signal (instrument + voice)
   vocalLevel: number; // 0..100 filtered vocal band energy
+  detectedNote: string | null; // Live sung musical note e.g. "Sol4" or "G4"
+  detectedHz: number | null;
+  pitchClarity: number; // 0..100 harmonic vocal clarity
   isVoiceActive: boolean;
   lastTranscript: string;
   errorMessage: string | null;
@@ -89,17 +96,22 @@ export function useVoiceTracker({
   onAdvanceToLine,
   language,
   bpm,
+  notation,
   mode,
   instrumentProfile,
   noiseGate,
 }: UseVoiceTrackerOptions): VoiceTrackerState {
   const [isListening, setIsListening] = useState(false);
+  const [isWordEngineActive, setIsWordEngineActive] = useState(false);
   const [permissionState, setPermissionState] = useState<
     "prompt" | "granted" | "denied" | "unknown"
   >("unknown");
   const [activeEngineNote, setActiveEngineNote] = useState<string | null>(null);
   const [rawLevel, setRawLevel] = useState(0);
   const [vocalLevel, setVocalLevel] = useState(0);
+  const [detectedNote, setDetectedNote] = useState<string | null>(null);
+  const [detectedHz, setDetectedHz] = useState<number | null>(null);
+  const [pitchClarity, setPitchClarity] = useState(0);
   const [isVoiceActive, setIsVoiceActive] = useState(false);
   const [lastTranscript, setLastTranscript] = useState("");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -116,10 +128,14 @@ export function useVoiceTracker({
   const noiseGateRef = useRef(noiseGate);
   const modeRef = useRef(mode);
   const bpmRef = useRef(bpm);
+  const notationRef = useRef(notation);
+
   const lastVoiceTimestampRef = useRef(0);
-  const recentTranscriptBufferRef = useRef("");
-  const cadenceProgressRef = useRef(0);
-  const cadenceActiveRef = useRef(false);
+  const lastWordMatchTimestampRef = useRef(0);
+  const lineEnteredTimestampRef = useRef(Date.now());
+  const finalTailRef = useRef<string[]>([]);
+  const lineProgressRef = useRef(0);
+  const wordEngineWorkingRef = useRef(false);
 
   const streamRef = useRef<MediaStream | null>(null);
   const audioCtxRef = useRef<AudioContext | null>(null);
@@ -128,11 +144,14 @@ export function useVoiceTracker({
   const recognitionRef = useRef<SpeechRecognitionInstance | null>(null);
   const aiIntervalRef = useRef<number | null>(null);
   const tempoIntervalRef = useRef<number | null>(null);
-  const cadenceIntervalRef = useRef<number | null>(null);
+  const hybridTickRef = useRef<number | null>(null);
 
   useEffect(() => {
-    activeLineRef.current = activeLineIndex;
-    cadenceProgressRef.current = 0;
+    if (activeLineRef.current !== activeLineIndex) {
+      activeLineRef.current = activeLineIndex;
+      lineProgressRef.current = 0;
+      lineEnteredTimestampRef.current = Date.now();
+    }
   }, [activeLineIndex]);
 
   useEffect(() => {
@@ -151,7 +170,11 @@ export function useVoiceTracker({
     bpmRef.current = bpm;
   }, [bpm]);
 
-  // Query browser microphone permission status when supported
+  useEffect(() => {
+    notationRef.current = notation;
+  }, [notation]);
+
+  // Query real browser mic permission status
   useEffect(() => {
     if (
       typeof navigator === "undefined" ||
@@ -170,15 +193,12 @@ export function useVoiceTracker({
           if (mounted) setPermissionState(status.state);
         };
       })
-      .catch(() => {
-        // Firefox / some browsers don't support querying 'microphone' permission
-      });
+      .catch(() => {});
     return () => {
       mounted = false;
     };
   }, []);
 
-  // Dynamically update high-pass cutoff when switching instrument profile live
   useEffect(() => {
     if (highpassRef.current && audioCtxRef.current) {
       highpassRef.current.frequency.setValueAtTime(
@@ -188,45 +208,53 @@ export function useVoiceTracker({
     }
   }, [instrumentProfile]);
 
-  const handleTranscriptText = useCallback(
-    (incomingText: string, skipGateCheck = false) => {
-      const cleaned = incomingText.trim();
+  const applyPhraseMatch = useCallback(
+    (phrase: string, bypassGate = false) => {
+      const cleaned = phrase.trim();
       if (!cleaned) return;
 
-      if (!skipGateCheck && modeRef.current === "voice_local") {
+      if (!bypassGate) {
         const msSinceVoice = Date.now() - lastVoiceTimestampRef.current;
-        if (msSinceVoice > 2600 && noiseGateRef.current > 15) {
+        if (msSinceVoice > 2400 && noiseGateRef.current > 15) {
           return;
         }
       }
 
       setLastTranscript(cleaned);
-      recentTranscriptBufferRef.current = `${recentTranscriptBufferRef.current} ${cleaned}`
-        .trim()
-        .split(/\s+/)
-        .slice(-14)
-        .join(" ");
 
       const match = matchTranscriptToLine(
-        recentTranscriptBufferRef.current,
+        cleaned,
         flatLinesRef.current,
         activeLineRef.current
       );
 
-      if (match) {
-        onAdvanceToLine(match.matchedLineIndex, match.wordProgress);
+      if (!match) return;
+
+      // Speed brake: prevent bouncing two lines ahead inside < 650ms unless skipping instrumental
+      const msOnCurrentLine = Date.now() - lineEnteredTimestampRef.current;
+      const lineDiff = match.matchedLineIndex - activeLineRef.current;
+      if (lineDiff > 1 && msOnCurrentLine < 650) {
+        return;
       }
+
+      lastWordMatchTimestampRef.current = Date.now();
+      lineProgressRef.current = match.wordProgress;
+      onAdvanceToLine(match.matchedLineIndex, match.wordProgress);
     },
     [onAdvanceToLine]
   );
 
   const stop = useCallback(() => {
     isListeningRef.current = false;
-    cadenceActiveRef.current = false;
+    wordEngineWorkingRef.current = false;
     setIsListening(false);
+    setIsWordEngineActive(false);
     setActiveEngineNote(null);
     setRawLevel(0);
     setVocalLevel(0);
+    setDetectedNote(null);
+    setDetectedHz(null);
+    setPitchClarity(0);
     setIsVoiceActive(false);
 
     if (rafRef.current !== null) {
@@ -244,9 +272,9 @@ export function useVoiceTracker({
       tempoIntervalRef.current = null;
     }
 
-    if (cadenceIntervalRef.current !== null) {
-      window.clearInterval(cadenceIntervalRef.current);
-      cadenceIntervalRef.current = null;
+    if (hybridTickRef.current !== null) {
+      window.clearInterval(hybridTickRef.current);
+      hybridTickRef.current = null;
     }
 
     if (recognitionRef.current) {
@@ -272,52 +300,91 @@ export function useVoiceTracker({
   }, []);
 
   /**
-   * Local DSP Vocal-Cadence Follower:
-   * Advances karaoke highlight and scrolls lines ONLY while singing energy exceeds the
-   * instrument noise-gate threshold, pausing cleanly during intros, solos, or breaths.
+   * Hybrid Note + Rhythm Sync Loop:
+   * - Uses real sung voice activity (bandpass energy + harmonic pitch clarity)
+   * - If the user is parked on an Intro/Tablature line and starts singing, hops to the first sung line
+   * - Advances line progress ONLY while actively singing, respecting BPM pace
+   * - Holds gently near the end of the line when word-engine is active so it NEVER runs ahead of the singer
    */
-  const startVocalCadenceLoop = useCallback(() => {
-    if (cadenceIntervalRef.current !== null) {
-      window.clearInterval(cadenceIntervalRef.current);
+  const startHybridCadenceLoop = useCallback(() => {
+    if (hybridTickRef.current !== null) {
+      window.clearInterval(hybridTickRef.current);
     }
-    cadenceActiveRef.current = true;
-    cadenceProgressRef.current = 0;
 
-    cadenceIntervalRef.current = window.setInterval(() => {
-      if (!isListeningRef.current || !cadenceActiveRef.current) return;
+    hybridTickRef.current = window.setInterval(() => {
+      if (!isListeningRef.current || modeRef.current !== "hybrid") return;
 
       const lines = flatLinesRef.current;
       const idx = activeLineRef.current;
       if (idx < 0 || idx >= lines.length) return;
 
       const current = lines[idx];
-      const msSinceVoice = Date.now() - lastVoiceTimestampRef.current;
-      const singingNow = msSinceVoice < 420;
+      const now = Date.now();
+      const msSinceVoice = now - lastVoiceTimestampRef.current;
+      const singingNow = msSinceVoice < 380;
 
-      if (!singingNow) return;
-
-      // If parked on an instrumental/tab line and the musician starts singing, jump to next sung line!
-      if (current.line.isInstrumental || current.line.isTablature) {
+      // If parked on Intro/Tablature and real singing starts, jump to first upcoming sung line
+      if (singingNow && (current.line.isInstrumental || current.line.isTablature)) {
         const nextSung = lines.findIndex(
           (l, i) => i > idx && !l.line.isInstrumental && !l.line.isTablature
         );
         if (nextSung !== -1) {
-          cadenceProgressRef.current = 0.08;
-          onAdvanceToLine(nextSung, 0.08);
+          lineProgressRef.current = 0.06;
+          onAdvanceToLine(nextSung, 0.06);
         }
         return;
       }
 
-      // Advance proportional to lyric length and song BPM while voice is active
-      const charCount = Math.max(18, current.line.lyrics.trim().length);
-      const estimatedLineDurationMs = Math.max(
-        2200,
-        (charCount / 11) * (60000 / Math.max(60, bpmRef.current)) * 2.1
-      );
-      const step = 120 / estimatedLineDurationMs;
-      const nextProgress = cadenceProgressRef.current + step;
+      if (current.line.isInstrumental || current.line.isTablature) return;
 
-      if (nextProgress >= 1) {
+      // If word matcher matched very recently (< 800ms), let words drive the exact position!
+      const msSinceWordMatch = now - lastWordMatchTimestampRef.current;
+      if (wordEngineWorkingRef.current && msSinceWordMatch < 850) {
+        return;
+      }
+
+      if (!singingNow) {
+        // Brief breath pause after finishing >= 88% of a line -> step cleanly to +1 line
+        if (
+          lineProgressRef.current >= 0.88 &&
+          msSinceVoice >= 380 &&
+          msSinceVoice <= 950 &&
+          now - lineEnteredTimestampRef.current > 1800
+        ) {
+          let nextIdx = idx + 1;
+          while (
+            nextIdx < lines.length &&
+            (lines[nextIdx].line.isInstrumental || lines[nextIdx].line.isTablature)
+          ) {
+            nextIdx++;
+          }
+          if (nextIdx < lines.length) {
+            lineProgressRef.current = 0;
+            onAdvanceToLine(nextIdx, 0);
+          }
+        }
+        return;
+      }
+
+      // Smoothly advance wordProgress while singing, calibrated by syllables & BPM
+      const charCount = Math.max(20, current.line.lyrics.trim().length);
+      const estimatedLineMs = Math.max(
+        2600,
+        (charCount / 9.5) * (60000 / Math.max(55, bpmRef.current)) * 2.25
+      );
+      const step = 120 / estimatedLineMs;
+      const nextProgress = Math.min(1, lineProgressRef.current + step);
+
+      // When word engine is working, cap rhythmic drift at 0.90 so words trigger the next line cleanly
+      if (wordEngineWorkingRef.current) {
+        const capped = Math.min(0.9, nextProgress);
+        lineProgressRef.current = capped;
+        onAdvanceToLine(idx, capped);
+        return;
+      }
+
+      // Without word engine (Opera/Firefox), advance +1 line once the line's full sung duration completes
+      if (nextProgress >= 1 && now - lineEnteredTimestampRef.current > 2000) {
         let nextIdx = idx + 1;
         while (
           nextIdx < lines.length &&
@@ -326,14 +393,14 @@ export function useVoiceTracker({
           nextIdx++;
         }
         if (nextIdx < lines.length) {
-          cadenceProgressRef.current = 0;
+          lineProgressRef.current = 0;
           onAdvanceToLine(nextIdx, 0);
         } else {
-          cadenceProgressRef.current = 1;
+          lineProgressRef.current = 1;
           onAdvanceToLine(idx, 1);
         }
       } else {
-        cadenceProgressRef.current = nextProgress;
+        lineProgressRef.current = nextProgress;
         onAdvanceToLine(idx, nextProgress);
       }
     }, 120);
@@ -379,18 +446,26 @@ export function useVoiceTracker({
 
     const vocalBand = ctx.createBiquadFilter();
     vocalBand.type = "bandpass";
-    vocalBand.frequency.value = 1150;
+    vocalBand.frequency.value = 1100;
     vocalBand.Q.value = 0.65;
 
     const vocalAnalyser = ctx.createAnalyser();
     vocalAnalyser.fftSize = 256;
 
+    // Larger buffer after high-pass for accurate monophonic pitch detection
+    const pitchAnalyser = ctx.createAnalyser();
+    pitchAnalyser.fftSize = 2048;
+
     source.connect(highpass);
+    highpass.connect(pitchAnalyser);
     highpass.connect(vocalBand);
     vocalBand.connect(vocalAnalyser);
 
     const rawData = new Uint8Array(rawAnalyser.frequencyBinCount);
     const vocalData = new Uint8Array(vocalAnalyser.frequencyBinCount);
+    const pitchBuffer = new Float32Array(pitchAnalyser.fftSize);
+
+    let frameCounter = 0;
 
     const tick = () => {
       if (!isListeningRef.current) return;
@@ -412,7 +487,33 @@ export function useVoiceTracker({
       setRawLevel(rawAvg);
       setVocalLevel(vocalAvg);
 
-      const voiceActiveNow = vocalAvg >= noiseGateRef.current;
+      // Run autocorrelation pitch detection every 2nd frame (~30fps)
+      frameCounter++;
+      let hasClearVocalPitch = false;
+      if (frameCounter % 2 === 0) {
+        pitchAnalyser.getFloatTimeDomainData(pitchBuffer);
+        const pitch = detectVocalPitch(
+          pitchBuffer,
+          ctx.sampleRate,
+          notationRef.current
+        );
+        const clarityPct = Math.round(pitch.clarity * 100);
+        setPitchClarity(clarityPct);
+        if (pitch.noteName && pitch.clarity >= 0.58) {
+          setDetectedNote(pitch.noteName);
+          setDetectedHz(pitch.frequency);
+          hasClearVocalPitch = true;
+        } else {
+          setDetectedNote(null);
+          setDetectedHz(null);
+        }
+      }
+
+      // Require vocal energy above gate AND either clear vocal pitch or strong vocal burst
+      const energyPassed = vocalAvg >= noiseGateRef.current;
+      const voiceActiveNow =
+        energyPassed && (hasClearVocalPitch || vocalAvg >= noiseGateRef.current + 12);
+
       setIsVoiceActive(voiceActiveNow);
       if (voiceActiveNow) {
         lastVoiceTimestampRef.current = Date.now();
@@ -425,19 +526,30 @@ export function useVoiceTracker({
     return stream;
   }, [instrumentProfile]);
 
-  const startLocalSpeech = useCallback(() => {
+  const startWordRecognition = useCallback(() => {
     if (!SpeechRecCtor) {
-      setActiveEngineNote(
-        "Este navegador no incluye reconocimiento de palabras; usando detección vocal DSP por micrófono."
-      );
-      startVocalCadenceLoop();
+      wordEngineWorkingRef.current = false;
+      setIsWordEngineActive(false);
+      if (modeRef.current === "words_only") {
+        setErrorMessage(
+          "Tu navegador no soporta 'Solo Palabras'. Cambia a 'Híbrido (Letra + Nota + Ritmo)'."
+        );
+      } else {
+        setActiveEngineNote(
+          "Seguimiento activo por Nota Musical + Energía Vocal + Ritmo BPM (tu navegador no incluye dictado de palabras)."
+        );
+      }
       return;
     }
 
-    setActiveEngineNote("Reconocimiento de palabras en vivo activo.");
-
     const launch = () => {
-      if (!isListeningRef.current || modeRef.current !== "voice_local") return;
+      if (
+        !isListeningRef.current ||
+        (modeRef.current !== "hybrid" && modeRef.current !== "words_only")
+      ) {
+        return;
+      }
+
       const rec = new SpeechRecCtor();
       rec.continuous = true;
       rec.interimResults = true;
@@ -445,15 +557,33 @@ export function useVoiceTracker({
       rec.lang = language === "en" ? "en-US" : "es-MX";
 
       rec.onresult = (event: SpeechRecognitionEventLike) => {
-        let combined = "";
+        wordEngineWorkingRef.current = true;
+        setIsWordEngineActive(true);
+
+        // Extract finalized words only up to resultIndex, plus the latest interim chunk
+        let latestInterim = "";
         for (let i = event.resultIndex; i < event.results.length; i++) {
-          const result = event.results[i];
-          if (result && result[0]) {
-            combined += " " + result[0].transcript;
+          const res = event.results[i];
+          const text = res?.[0]?.transcript?.trim();
+          if (!text) continue;
+          if (res.isFinal) {
+            const words = text.split(/\s+/);
+            finalTailRef.current = [...finalTailRef.current, ...words].slice(-4);
+          } else {
+            latestInterim = text;
           }
         }
-        if (combined.trim()) {
-          handleTranscriptText(combined.trim());
+
+        // Compare ONLY the freshest phrase (last 2 finalized words + current interim)
+        const freshPhrase = [
+          ...finalTailRef.current.slice(-2),
+          latestInterim,
+        ]
+          .join(" ")
+          .trim();
+
+        if (freshPhrase) {
+          applyPhraseMatch(freshPhrase);
         }
       };
 
@@ -461,7 +591,7 @@ export function useVoiceTracker({
         if (ev.error === "not-allowed") {
           setPermissionState("denied");
           setErrorMessage(
-            "Permiso de micrófono denegado. Haz clic en el icono de candado/micrófono en la barra de dirección para permitirlo."
+            "Permiso de micrófono denegado. Permite el micrófono en el candado de la URL e inténtalo de nuevo."
           );
           stop();
         } else if (
@@ -469,8 +599,6 @@ export function useVoiceTracker({
           ev.error === "service-not-allowed" ||
           ev.error === "language-not-supported"
         ) {
-          // Browsers like Opera/Brave/Firefox disable Google SpeechRecognition stub;
-          // fall back seamlessly to real-mic DSP vocal cadence tracking!
           try {
             rec.onend = null;
             rec.abort();
@@ -478,41 +606,55 @@ export function useVoiceTracker({
             // ignore
           }
           recognitionRef.current = null;
-          setActiveEngineNote(
-            "Navegador sin servicio de dictado externo: activado seguimiento vocal DSP por micrófono."
-          );
-          startVocalCadenceLoop();
+          wordEngineWorkingRef.current = false;
+          setIsWordEngineActive(false);
+
+          if (modeRef.current === "words_only") {
+            setErrorMessage(
+              "Este navegador bloqueó el servicio de palabras. Cambia a 'Híbrido (Letra + Nota + Ritmo)'."
+            );
+            stop();
+          } else {
+            setActiveEngineNote(
+              "Modo Híbrido activo con Nota Musical + Voz DSP + Ritmo (sin servicio externo de palabras en este navegador)."
+            );
+          }
         }
       };
 
       rec.onend = () => {
         if (
           isListeningRef.current &&
-          modeRef.current === "voice_local" &&
-          !cadenceActiveRef.current
+          (modeRef.current === "hybrid" || modeRef.current === "words_only")
         ) {
           setTimeout(() => {
             if (
               isListeningRef.current &&
-              modeRef.current === "voice_local" &&
-              !cadenceActiveRef.current
+              (modeRef.current === "hybrid" || modeRef.current === "words_only")
             ) {
               launch();
             }
-          }, 200);
+          }, 220);
         }
       };
 
       recognitionRef.current = rec;
       try {
         rec.start();
+        wordEngineWorkingRef.current = true;
+        setIsWordEngineActive(true);
+        setActiveEngineNote(
+          modeRef.current === "hybrid"
+            ? "Modo Híbrido activo: Palabras + Nota Musical + Ritmo BPM."
+            : "Modo Solo Palabras activo: avanza al coincidir tu letra."
+        );
       } catch {
-        // Ignore already-started errors
+        // Ignore already-started
       }
     };
 
     launch();
-  }, [SpeechRecCtor, handleTranscriptText, language, startVocalCadenceLoop, stop]);
+  }, [SpeechRecCtor, applyPhraseMatch, language, stop]);
 
   const startAiAudioClipSync = useCallback(
     (stream: MediaStream) => {
@@ -580,13 +722,13 @@ export function useVoiceTracker({
             if (res.ok && contentType.includes("application/json")) {
               const data = (await res.json()) as { transcript?: string };
               if (data.transcript) {
-                handleTranscriptText(data.transcript, true);
+                applyPhraseMatch(data.transcript, true);
               }
             } else if (res.status === 404 || res.status === 405) {
-              setActiveEngineNote(
-                "Servidor IA no disponible en hosting estático: usando seguimiento vocal DSP por micrófono."
+              setErrorMessage(
+                "El modo 'IA Ruidoso' requiere servidor Node. Usa 'Híbrido (Letra + Nota + Ritmo)' en hosting estático."
               );
-              startVocalCadenceLoop();
+              stop();
             }
           } catch (err) {
             console.error("AI audio clip sync failed:", err);
@@ -606,12 +748,12 @@ export function useVoiceTracker({
       recordWindow();
       aiIntervalRef.current = window.setInterval(recordWindow, 3300);
     },
-    [handleTranscriptText, language, startVocalCadenceLoop]
+    [applyPhraseMatch, language, stop]
   );
 
   const startAutoTempo = useCallback(() => {
-    setActiveEngineNote("Avance automático por tempo (sin micrófono).");
-    const msPerLine = Math.max(2200, Math.round((60000 / Math.max(50, bpm)) * 6));
+    setActiveEngineNote("Avance automático por tempo BPM (sin micrófono).");
+    const msPerLine = Math.max(2400, Math.round((60000 / Math.max(50, bpm)) * 6));
     tempoIntervalRef.current = window.setInterval(() => {
       if (!isListeningRef.current || modeRef.current !== "auto_tempo") return;
       const next = Math.min(
@@ -626,7 +768,9 @@ export function useVoiceTracker({
     stop();
     setErrorMessage(null);
     setActiveEngineNote(null);
-    recentTranscriptBufferRef.current = "";
+    finalTailRef.current = [];
+    lineProgressRef.current = 0;
+    lineEnteredTimestampRef.current = Date.now();
     isListeningRef.current = true;
     setIsListening(true);
 
@@ -636,20 +780,17 @@ export function useVoiceTracker({
     }
 
     try {
-      // Triggers native browser microphone permission prompt immediately on click
       const stream = await startAudioMonitor();
       if (!isListeningRef.current) {
         stop();
         return;
       }
 
-      if (mode === "voice_local") {
-        startLocalSpeech();
-      } else if (mode === "vocal_cadence") {
-        setActiveEngineNote(
-          "Seguimiento vocal DSP activo: canta por encima del umbral para avanzar."
-        );
-        startVocalCadenceLoop();
+      if (mode === "hybrid") {
+        startWordRecognition();
+        startHybridCadenceLoop();
+      } else if (mode === "words_only") {
+        startWordRecognition();
       } else if (mode === "voice_ai") {
         startAiAudioClipSync(stream);
       }
@@ -665,7 +806,7 @@ export function useVoiceTracker({
       ) {
         setPermissionState("denied");
         setErrorMessage(
-          "Permiso de micrófono denegado. Permite el micrófono en el candado de la URL del navegador e inténtalo de nuevo."
+          "Permiso de micrófono denegado. Permite el micrófono en el candado de la URL e inténtalo de nuevo."
         );
       } else {
         setErrorMessage(`Error de micrófono: ${msg}`);
@@ -677,8 +818,8 @@ export function useVoiceTracker({
     startAiAudioClipSync,
     startAudioMonitor,
     startAutoTempo,
-    startLocalSpeech,
-    startVocalCadenceLoop,
+    startHybridCadenceLoop,
+    startWordRecognition,
     stop,
   ]);
 
@@ -690,18 +831,22 @@ export function useVoiceTracker({
 
   const testPhrase = useCallback(
     (phrase: string) => {
-      handleTranscriptText(phrase, true);
+      applyPhraseMatch(phrase, true);
     },
-    [handleTranscriptText]
+    [applyPhraseMatch]
   );
 
   return {
     isListening,
     isSpeechSupported,
+    isWordEngineActive,
     permissionState,
     activeEngineNote,
     rawLevel,
     vocalLevel,
+    detectedNote,
+    detectedHz,
+    pitchClarity,
     isVoiceActive,
     lastTranscript,
     errorMessage,

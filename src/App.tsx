@@ -41,7 +41,7 @@ const DEFAULT_PREFS: SavedPrefs = {
   isDarkMode: true,
   instrumentProfile: "acoustic_guitar",
   noiseGate: 22,
-  mode: "voice_local",
+  mode: "hybrid",
 };
 
 function loadInitialSongs(): Song[] {
@@ -63,7 +63,15 @@ function loadInitialPrefs(): SavedPrefs {
   try {
     const raw = localStorage.getItem(STORAGE_PREFS_KEY);
     if (raw) {
-      return { ...DEFAULT_PREFS, ...(JSON.parse(raw) as Partial<SavedPrefs>) };
+      const parsed = JSON.parse(raw) as Partial<SavedPrefs> & { mode?: string };
+      const validMode: TrackingMode =
+        parsed.mode === "hybrid" ||
+        parsed.mode === "words_only" ||
+        parsed.mode === "voice_ai" ||
+        parsed.mode === "auto_tempo"
+          ? parsed.mode
+          : "hybrid";
+      return { ...DEFAULT_PREFS, ...parsed, mode: validMode };
     }
   } catch {
     // ignore storage errors
@@ -156,14 +164,13 @@ export default function App() {
     [flatLines.length]
   );
 
-  // If SpeechRecognition isn't supported in the browser, fall back smoothly to local DSP vocal tracking
   const effectiveMode: TrackingMode = useMemo(() => {
     if (
-      prefs.mode === "voice_local" &&
+      prefs.mode === "words_only" &&
       typeof window !== "undefined" &&
       !("SpeechRecognition" in window || "webkitSpeechRecognition" in window)
     ) {
-      return "vocal_cadence";
+      return "hybrid";
     }
     return prefs.mode;
   }, [prefs.mode]);
@@ -174,6 +181,7 @@ export default function App() {
     onAdvanceToLine: handleAdvanceToLine,
     language: activeSong.language,
     bpm: activeSong.bpm,
+    notation: prefs.notation,
     mode: effectiveMode,
     instrumentProfile: prefs.instrumentProfile,
     noiseGate: prefs.noiseGate,

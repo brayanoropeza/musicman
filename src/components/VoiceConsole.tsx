@@ -30,6 +30,8 @@ export function VoiceConsole({
     activeEngineNote,
     rawLevel,
     vocalLevel,
+    detectedNote,
+    detectedHz,
     isVoiceActive,
     lastTranscript,
     errorMessage,
@@ -44,7 +46,7 @@ export function VoiceConsole({
       className="border-b border-slate-200 dark:border-zinc-800 bg-slate-50/80 dark:bg-zinc-900/60 px-4 sm:px-6 py-3"
     >
       <div className="max-w-6xl mx-auto flex flex-wrap items-center justify-between gap-4">
-        {/* Primary Mic Start Button + Mode Selector */}
+        {/* Primary Mic Start Button + Unified Mode Selector */}
         <div className="flex flex-wrap items-center gap-3">
           <button
             type="button"
@@ -77,32 +79,32 @@ export function VoiceConsole({
           >
             <button
               type="button"
-              onClick={() => onChangeMode("voice_local")}
-              disabled={!isSpeechSupported}
-              title={
-                isSpeechSupported
-                  ? "Reconocimiento palabra por palabra (Chrome/Edge/Safari)"
-                  : "No disponible en este navegador; usa Voz DSP"
-              }
-              className={`px-2.5 py-1.5 text-xs font-medium rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed ${
-                mode === "voice_local"
+              onClick={() => onChangeMode("hybrid")}
+              title="Combina detección de palabras, nota musical cantada y ritmo BPM con freno anti-adelanto"
+              className={`px-2.5 py-1.5 text-xs font-medium rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                mode === "hybrid"
                   ? "bg-white dark:bg-zinc-950 text-slate-900 dark:text-zinc-100 shadow-xs"
                   : "text-slate-600 dark:text-zinc-400 hover:text-slate-900 dark:hover:text-zinc-200"
               }`}
             >
-              Palabras en Vivo
+              Híbrido (Letra + Nota + Ritmo)
             </button>
             <button
               type="button"
-              onClick={() => onChangeMode("vocal_cadence")}
-              title="Funciona en todos los navegadores (incluye Opera y Firefox): detecta energía de tu voz filtrando el instrumento"
-              className={`px-2.5 py-1.5 text-xs font-medium rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-                mode === "vocal_cadence"
+              onClick={() => onChangeMode("words_only")}
+              disabled={!isSpeechSupported}
+              title={
+                isSpeechSupported
+                  ? "Avanza estrictamente al coincidir las palabras cantadas (nunca por ritmo solo)"
+                  : "No disponible en este navegador; usa Híbrido"
+              }
+              className={`px-2.5 py-1.5 text-xs font-medium rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed ${
+                mode === "words_only"
                   ? "bg-white dark:bg-zinc-950 text-slate-900 dark:text-zinc-100 shadow-xs"
                   : "text-slate-600 dark:text-zinc-400 hover:text-slate-900 dark:hover:text-zinc-200"
               }`}
             >
-              Voz DSP
+              Solo Palabras
             </button>
             <button
               type="button"
@@ -129,7 +131,7 @@ export function VoiceConsole({
           </div>
         </div>
 
-        {/* Instrument Filter + Real Vocal Energy Meter */}
+        {/* Instrument Filter + Live Pitch Note + Vocal Energy Meter */}
         <div className="flex flex-wrap items-center gap-4">
           <div className="flex items-center gap-2">
             <label
@@ -155,18 +157,22 @@ export function VoiceConsole({
 
           {mode !== "auto_tempo" && (
             <div className="flex items-center gap-3">
-              <div className="w-36 sm:w-44 space-y-1">
+              <div className="w-40 sm:w-48 space-y-1">
                 <div className="flex items-center justify-between text-[11px] text-slate-500 dark:text-zinc-400">
                   <span>
                     {isListening
                       ? isVoiceActive
-                        ? "Voz detectada"
+                        ? detectedNote
+                          ? `Nota ${detectedNote}`
+                          : "Voz detectada"
                         : "Solo instrumento"
                       : permissionState === "denied"
                       ? "Micrófono bloqueado"
                       : "Listo para empezar"}
                   </span>
-                  <span className="font-mono">{vocalLevel}%</span>
+                  <span className="font-mono">
+                    {detectedHz ? `${detectedHz}Hz` : `${vocalLevel}%`}
+                  </span>
                 </div>
                 <div className="relative h-2 w-full rounded-full bg-slate-200 dark:bg-zinc-800 overflow-hidden">
                   <div

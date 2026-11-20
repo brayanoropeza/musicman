@@ -1,17 +1,54 @@
 import { FlatSongLine } from "../types/song";
 
+const STOPWORDS = new Set([
+  "de",
+  "la",
+  "el",
+  "los",
+  "las",
+  "un",
+  "una",
+  "y",
+  "o",
+  "a",
+  "en",
+  "que",
+  "se",
+  "no",
+  "me",
+  "te",
+  "mi",
+  "tu",
+  "su",
+  "por",
+  "con",
+  "del",
+  "al",
+  "lo",
+  "pa",
+  "the",
+  "and",
+  "to",
+  "of",
+  "in",
+  "is",
+  "it",
+  "you",
+  "i",
+]);
+
 /**
  * Normalizes Spanish & English sung text so phonetic similarities
- * (e.g. "b/v", "s/c/z", "ll/y", elongated vowels "aaamoor") still match cleanly
- * even when acoustic instruments cause imperfect speech recognition.
+ * (e.g. "b/v", "s/c/z", "ll/y", elongated vowels "aaamoor") match cleanly
+ * even with instrument accompaniment.
  */
 export function normalizePhonetic(input: string): string {
   return input
     .toLowerCase()
     .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "") // strip accents
+    .replace(/[\u0300-\u036f]/g, "")
     .replace(/[^a-z0-9\s]/g, " ")
-    .replace(/([a-z])\1+/g, "$1") // collapse elongated sung vowels/letters
+    .replace(/([a-z])\1+/g, "$1")
     .replace(/\bv/g, "b")
     .replace(/c([ei])/g, "s$1")
     .replace(/z/g, "s")
@@ -32,9 +69,8 @@ function wordSimilarity(a: string, b: string): number {
   if (a === b) return 1;
   if (!a || !b) return 0;
   if (a.length >= 3 && b.length >= 3) {
-    if (a.includes(b) || b.includes(a)) return 0.82;
+    if (a.includes(b) || b.includes(a)) return 0.85;
   }
-  // Character bigram Jaccard similarity for fuzzy singing matches
   if (a.length < 2 || b.length < 2) return a === b ? 1 : 0;
   const bigramsA = new Set<string>();
   const bigramsB = new Set<string>();
@@ -54,93 +90,156 @@ export interface MatchResult {
 }
 
 /**
- * Matches a rolling window of live microphone transcript words against the song's
- * upcoming lines, gracefully jumping past instrumental solos/intros when the
- * musician starts singing the next vocal phrase.
+ * Strict anti-runaway matcher:
+ * - Anchors strongly to the current line while words in it are still being sung.
+ * - Only advances +1 line when words from the immediate next sung line appear (or current line finishes).
+ * - Only jumps further ahead (e.g. skipping an instrumental solo or chorus jump) if >= 2 distinct
+ *   meaningful content words match in order with high confidence.
  */
 export function matchTranscriptToLine(
-  transcript: string,
+  recentPhrase: string,
   flatLines: FlatSongLine[],
   currentLineIndex: number
 ): MatchResult | null {
-  const heardWords = tokenizeNormalized(transcript);
+  const heardWords = tokenizeNormalized(recentPhrase);
   if (heardWords.length === 0 || flatLines.length === 0) return null;
 
-  // Use the last 10 heard words so older phrases don't pull the cursor backward
-  const recentHeard = heardWords.slice(-10);
+  // Keep only the freshest 6 words so old lines never pull or push erratically
+  const freshHeard = heardWords.slice(-6);
 
-  // Search window: allow 1 line back (in case of quick repeat), and up to 7 lines ahead
-  // (automatically skipping instrumental chord-only lines!)
-  const minIdx = Math.max(0, currentLineIndex - 1);
-  const maxIdx = Math.min(flatLines.length - 1, currentLineIndex + 7);
+  // Build candidate indices: current line, next sung lines (+1, +2, and at most +3 for post-solo skip)
+  const candidates: number[] = [];
+  if (currentLineIndex >= 0 && currentLineIndex < flatLines.length) {
+    candidates.push(currentLineIndex);
+  }
+  let sungAhead = 0;
+  for (
+    let i = currentLineIndex + 1;
+    i < flatLines.length && sungAhead < 4;
+    i++
+  ) {
+    if (!flatLines[i].line.isInstrumental && !flatLines[i].line.isTablature) {
+      candidates.push(i);
+      sungAhead++;
+    }
+  }
 
-  let bestScore = 0;
-  let bestIdx = currentLineIndex;
-  let bestProgress = 0;
+  let bestResult: MatchResult | null = null;
+  let bestWeightedScore = 0;
 
-  for (let idx = minIdx; idx <= maxIdx; idx++) {
-    const candidate = flatLines[idx];
-    if (candidate.line.isInstrumental) continue;
+  // Evaluate current line first to check if singer is still clearly on this line
+  const evalLine = (idx: number) => {
+    const item = flatLines[idx];
+    if (!item || item.line.isInstrumental || item.line.isTablature) {
+      return null;
+    }
 
-    const lineWords = tokenizeNormalized(candidate.line.lyrics);
-    if (lineWords.length === 0) continue;
+    const lineWords = tokenizeNormalized(item.line.lyrics);
+    if (lineWords.length === 0) return null;
 
-    // Score how many words in this line match the recent sung transcript in order
-    let matchedWords = 0;
-    let lastMatchedLineWordPos = -1;
-    let sequenceBonus = 0;
+    let totalScore = 0;
+    let contentHits = 0;
+    let totalHits = 0;
+    let lastPos = -1;
+    let inOrderHits = 0;
 
-    for (let hwIdx = 0; hwIdx < recentHeard.length; hwIdx++) {
-      const hw = recentHeard[hwIdx];
-      let bestWordScore = 0;
+    for (const hw of freshHeard) {
+      let bestSim = 0;
       let bestPos = -1;
 
       for (let lwIdx = 0; lwIdx < lineWords.length; lwIdx++) {
         const sim = wordSimilarity(hw, lineWords[lwIdx]);
-        if (sim > 0.68 && sim > bestWordScore) {
-          bestWordScore = sim;
+        if (sim >= 0.74 && sim > bestSim) {
+          bestSim = sim;
           bestPos = lwIdx;
         }
       }
 
       if (bestPos !== -1) {
-        matchedWords += bestWordScore;
-        if (bestPos >= lastMatchedLineWordPos) {
-          sequenceBonus += 0.2;
-          lastMatchedLineWordPos = bestPos;
+        totalHits++;
+        const isContent = !STOPWORDS.has(lineWords[bestPos]) && lineWords[bestPos].length >= 3;
+        if (isContent) contentHits++;
+        totalScore += bestSim * (isContent ? 1.25 : 0.65);
+
+        if (bestPos >= lastPos) {
+          inOrderHits++;
+          lastPos = bestPos;
         }
       }
     }
 
-    const coverage = matchedWords / Math.max(2, Math.min(lineWords.length, 5));
-    let score = coverage + sequenceBonus * 0.25;
+    if (totalHits === 0) return null;
 
-    // Gentle forward bias: prefer current line or immediate next line over distant repeats
-    const distance = idx - currentLineIndex;
-    if (distance === 0) score *= 1.15;
-    else if (distance === 1) score *= 1.12;
-    else if (distance === 2) score *= 1.02;
-    else if (distance < 0) score *= 0.65;
-    else score *= Math.max(0.75, 1 - distance * 0.04);
+    const progress =
+      lastPos >= 0 ? Math.min(1, (lastPos + 1) / lineWords.length) : 0;
 
-    if (score > bestScore) {
-      bestScore = score;
-      bestIdx = idx;
-      bestProgress =
-        lastMatchedLineWordPos >= 0
-          ? Math.min(1, (lastMatchedLineWordPos + 1) / lineWords.length)
-          : 0;
+    return {
+      idx,
+      totalScore,
+      contentHits,
+      totalHits,
+      inOrderHits,
+      progress,
+      lineWordCount: lineWords.length,
+    };
+  };
+
+  const currentEval = evalLine(currentLineIndex);
+
+  // If the singer's freshest last 2 words match the current line and haven't finished it,
+  // lock onto the current line so repeated chorus words ahead NEVER yank the cursor away!
+  if (
+    currentEval &&
+    currentEval.totalHits >= 1 &&
+    currentEval.progress < 0.88 &&
+    currentEval.contentHits >= 1
+  ) {
+    return {
+      matchedLineIndex: currentLineIndex,
+      wordProgress: currentEval.progress,
+      confidence: Math.min(1, currentEval.totalScore / 2.2),
+    };
+  }
+
+  for (let orderIdx = 0; orderIdx < candidates.length; orderIdx++) {
+    const idx = candidates[orderIdx];
+    const res = idx === currentLineIndex ? currentEval : evalLine(idx);
+    if (!res) continue;
+
+    const sungDistance = orderIdx; // 0 = current, 1 = next sung line, 2+ = further ahead
+
+    // Strict gate against jumping ahead on 1 accidental word
+    if (sungDistance === 0) {
+      if (res.totalHits < 1) continue;
+    } else if (sungDistance === 1) {
+      // To advance to the very next line: require either >= 2 matching words OR 1 strong content word
+      if (res.totalHits < 2 && res.contentHits < 1) continue;
+      // If current line just started (< 35% progress) and has matches, don't jump early on just 1 word
+      if (
+        currentEval &&
+        currentEval.progress < 0.35 &&
+        res.contentHits < 2
+      ) {
+        continue;
+      }
+    } else {
+      // Skipping 2+ sung lines ahead requires strong proof (>= 2 distinct content words in order)
+      if (res.contentHits < 2 || res.inOrderHits < 2) continue;
+    }
+
+    const distanceWeight =
+      sungDistance === 0 ? 1.25 : sungDistance === 1 ? 1.05 : 0.72;
+    const weighted = (res.totalScore + res.inOrderHits * 0.2) * distanceWeight;
+
+    if (weighted > bestWeightedScore) {
+      bestWeightedScore = weighted;
+      bestResult = {
+        matchedLineIndex: idx,
+        wordProgress: res.progress,
+        confidence: Math.min(1, res.totalScore / 2.5),
+      };
     }
   }
 
-  // Require enough confidence so stray guitar transients don't trigger false jumps
-  if (bestScore < 0.36) return null;
-
-  // If the musician already sang >= 85% of the current line, nudge smoothly toward the end
-  // or keep them on the current line until the first word of the next line hits.
-  return {
-    matchedLineIndex: bestIdx,
-    wordProgress: bestProgress,
-    confidence: Math.min(1, bestScore),
-  };
+  return bestResult;
 }
