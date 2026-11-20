@@ -1,9 +1,5 @@
-import * as pdfjsLib from "pdfjs-dist";
-import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import { Song } from "../types/song";
 import { parseLaCuerdaText } from "./chords";
-
-pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 
 interface PositionedItem {
   str: string;
@@ -13,11 +9,18 @@ interface PositionedItem {
 }
 
 /**
- * Extracts text from a PDF file directly in the browser using pdfjs-dist,
+ * Extracts text from a PDF file directly in the browser using pdfjs-dist (loaded lazily),
  * preserving X/Y column alignment so chords above lyrics and ASCII tablatures
  * parse accurately even when hosted statically (e.g. GitHub Pages) without a backend.
  */
 export async function parsePdfLocally(file: File): Promise<Song> {
+  const [pdfjsLib, workerMod] = await Promise.all([
+    import("pdfjs-dist"),
+    import("pdfjs-dist/build/pdf.worker.min.mjs?url"),
+  ]);
+
+  pdfjsLib.GlobalWorkerOptions.workerSrc = workerMod.default;
+
   const arrayBuffer = await file.arrayBuffer();
   const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer });
   const pdf = await loadingTask.promise;
@@ -42,7 +45,6 @@ export async function parsePdfLocally(file: File): Promise<Song> {
       });
     }
 
-    // Group items into horizontal lines (Y descending in PDF coordinate space)
     items.sort((a, b) => b.y - a.y || a.x - b.x);
 
     const lines: PositionedItem[][] = [];
@@ -55,7 +57,6 @@ export async function parsePdfLocally(file: File): Promise<Song> {
       }
     }
 
-    // Estimate average character width from items to preserve chord column offsets
     let totalChars = 0;
     let totalWidth = 0;
     for (const item of items) {
@@ -64,7 +65,8 @@ export async function parsePdfLocally(file: File): Promise<Song> {
         totalWidth += item.width;
       }
     }
-    const charWidth = totalChars > 0 ? Math.max(4.2, totalWidth / totalChars) : 5.5;
+    const charWidth =
+      totalChars > 0 ? Math.max(4.2, totalWidth / totalChars) : 5.5;
     const minX = items.reduce((m, it) => Math.min(m, it.x), Infinity);
     const baseX = Number.isFinite(minX) ? minX : 0;
 
@@ -92,7 +94,10 @@ export async function parsePdfLocally(file: File): Promise<Song> {
     );
   }
 
-  const baseTitle = file.name.replace(/\.pdf$/i, "").replace(/[_-]+/g, " ").trim();
+  const baseTitle = file.name
+    .replace(/\.pdf$/i, "")
+    .replace(/[_-]+/g, " ")
+    .trim();
   const parsed = parseLaCuerdaText(combinedText, {
     title: baseTitle || "Canción desde PDF",
   });
