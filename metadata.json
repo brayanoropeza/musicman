@@ -1,0 +1,6 @@
+{
+  "name": "AtrilVivo",
+  "description": "Teleprompter karaoke inteligente para músicos: importa PDFs de letras y acordes con seguimiento automático de voz por micrófono mientras tocas tu instrumento.",
+  "requestFramePermissions": ["microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
