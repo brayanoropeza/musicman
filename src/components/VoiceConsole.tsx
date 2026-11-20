@@ -26,6 +26,8 @@ export function VoiceConsole({
   const {
     isListening,
     isSpeechSupported,
+    permissionState,
+    activeEngineNote,
     rawLevel,
     vocalLevel,
     isVoiceActive,
@@ -42,7 +44,7 @@ export function VoiceConsole({
       className="border-b border-slate-200 dark:border-zinc-800 bg-slate-50/80 dark:bg-zinc-900/60 px-4 sm:px-6 py-3"
     >
       <div className="max-w-6xl mx-auto flex flex-wrap items-center justify-between gap-4">
-        {/* Primary Mic Toggle + Mode Selector */}
+        {/* Primary Mic Start Button + Mode Selector */}
         <div className="flex flex-wrap items-center gap-3">
           <button
             type="button"
@@ -50,7 +52,7 @@ export function VoiceConsole({
             className={`inline-flex items-center gap-2 px-4 py-2 text-sm font-semibold rounded-lg transition-all whitespace-nowrap shrink-0 cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-500 ${
               isListening
                 ? "bg-emerald-600 text-white hover:bg-emerald-500"
-                : "bg-slate-900 dark:bg-zinc-100 text-white dark:text-zinc-950 hover:bg-slate-800 dark:hover:bg-white"
+                : "bg-amber-500 text-zinc-950 hover:bg-amber-400"
             }`}
           >
             {isListening ? (
@@ -61,7 +63,9 @@ export function VoiceConsole({
             ) : (
               <>
                 <Mic className="w-4 h-4" />
-                {mode === "auto_tempo" ? "Iniciar Auto-Ritmo" : "Activar Seguimiento"}
+                {mode === "auto_tempo"
+                  ? "Empezar Auto-Ritmo"
+                  : "Empezar (Activar Micrófono)"}
               </>
             )}
           </button>
@@ -69,7 +73,7 @@ export function VoiceConsole({
           <div
             role="group"
             aria-label="Modo de seguimiento"
-            className="flex items-center gap-1 p-1 rounded-lg bg-slate-200/70 dark:bg-zinc-800"
+            className="flex flex-wrap items-center gap-1 p-1 rounded-lg bg-slate-200/70 dark:bg-zinc-800"
           >
             <button
               type="button"
@@ -77,8 +81,8 @@ export function VoiceConsole({
               disabled={!isSpeechSupported}
               title={
                 isSpeechSupported
-                  ? "Seguimiento instantáneo local por voz"
-                  : "No soportado en este navegador; usa Modo IA"
+                  ? "Reconocimiento palabra por palabra (Chrome/Edge/Safari)"
+                  : "No disponible en este navegador; usa Voz DSP"
               }
               className={`px-2.5 py-1.5 text-xs font-medium rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed ${
                 mode === "voice_local"
@@ -86,7 +90,19 @@ export function VoiceConsole({
                   : "text-slate-600 dark:text-zinc-400 hover:text-slate-900 dark:hover:text-zinc-200"
               }`}
             >
-              Voz en Vivo
+              Palabras en Vivo
+            </button>
+            <button
+              type="button"
+              onClick={() => onChangeMode("vocal_cadence")}
+              title="Funciona en todos los navegadores (incluye Opera y Firefox): detecta energía de tu voz filtrando el instrumento"
+              className={`px-2.5 py-1.5 text-xs font-medium rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                mode === "vocal_cadence"
+                  ? "bg-white dark:bg-zinc-950 text-slate-900 dark:text-zinc-100 shadow-xs"
+                  : "text-slate-600 dark:text-zinc-400 hover:text-slate-900 dark:hover:text-zinc-200"
+              }`}
+            >
+              Voz DSP
             </button>
             <button
               type="button"
@@ -97,7 +113,7 @@ export function VoiceConsole({
                   : "text-slate-600 dark:text-zinc-400 hover:text-slate-900 dark:hover:text-zinc-200"
               }`}
             >
-              Ambiente Ruidoso (IA)
+              IA Ruidoso
             </button>
             <button
               type="button"
@@ -146,24 +162,23 @@ export function VoiceConsole({
                       ? isVoiceActive
                         ? "Voz detectada"
                         : "Solo instrumento"
-                      : "Micrófono inactivo"}
+                      : permissionState === "denied"
+                      ? "Micrófono bloqueado"
+                      : "Listo para empezar"}
                   </span>
                   <span className="font-mono">{vocalLevel}%</span>
                 </div>
                 <div className="relative h-2 w-full rounded-full bg-slate-200 dark:bg-zinc-800 overflow-hidden">
-                  {/* Raw instrument + voice level */}
                   <div
                     className="absolute inset-y-0 left-0 bg-slate-400/50 dark:bg-zinc-600/60 transition-[width] duration-75"
                     style={{ width: `${rawLevel}%` }}
                   />
-                  {/* Filtered vocal band level */}
                   <div
                     className={`absolute inset-y-0 left-0 transition-[width] duration-75 ${
                       isVoiceActive ? "bg-emerald-500" : "bg-amber-500"
                     }`}
                     style={{ width: `${vocalLevel}%` }}
                   />
-                  {/* Noise gate threshold line */}
                   <div
                     className="absolute inset-y-0 w-0.5 bg-slate-900 dark:bg-white z-10"
                     style={{ left: `${noiseGate}%` }}
@@ -204,18 +219,20 @@ export function VoiceConsole({
         </div>
       </div>
 
-      {/* Live transcript feedback / Error line */}
-      {(lastTranscript || errorMessage || isProcessingAiClip) && (
+      {/* Live status / transcript / error row */}
+      {(lastTranscript || errorMessage || activeEngineNote || isProcessingAiClip) && (
         <div className="max-w-6xl mx-auto mt-2 flex flex-wrap items-center justify-between gap-2 text-xs">
           {errorMessage ? (
             <p className="text-red-600 dark:text-red-400 font-medium">
               {errorMessage}
             </p>
           ) : (
-            <p className="text-slate-500 dark:text-zinc-400 truncate max-w-2xl">
+            <p className="text-slate-500 dark:text-zinc-400 truncate max-w-3xl">
               {isProcessingAiClip
                 ? "Analizando fragmento vocal con IA..."
-                : `Escuchando: "${lastTranscript}"`}
+                : lastTranscript
+                ? `Escuchando: "${lastTranscript}"`
+                : activeEngineNote}
             </p>
           )}
         </div>

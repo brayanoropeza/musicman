@@ -156,14 +156,14 @@ export default function App() {
     [flatLines.length]
   );
 
-  // If SpeechRecognition isn't supported in the browser, fall back smoothly from voice_local
+  // If SpeechRecognition isn't supported in the browser, fall back smoothly to local DSP vocal tracking
   const effectiveMode: TrackingMode = useMemo(() => {
     if (
       prefs.mode === "voice_local" &&
       typeof window !== "undefined" &&
       !("SpeechRecognition" in window || "webkitSpeechRecognition" in window)
     ) {
-      return "voice_ai";
+      return "vocal_cadence";
     }
     return prefs.mode;
   }, [prefs.mode]);

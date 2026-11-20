@@ -43,7 +43,11 @@ export type InstrumentProfile =
   | "piano"
   | "vocals_only";
 
-export type TrackingMode = "voice_local" | "voice_ai" | "auto_tempo";
+export type TrackingMode =
+  | "voice_local"
+  | "vocal_cadence"
+  | "voice_ai"
+  | "auto_tempo";
 
 export type NotationSystem = "american" | "latin";
 

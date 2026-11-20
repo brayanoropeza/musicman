@@ -55,6 +55,13 @@ export function MicCalibrationView({
       },
     ];
 
+  const permissionLabel =
+    tracker.permissionState === "granted"
+      ? "Permiso concedido"
+      : tracker.permissionState === "denied"
+      ? "Permiso bloqueado en navegador"
+      : "Se solicitará permiso al iniciar";
+
   return (
     <div className="flex-1 overflow-y-auto stage-scroll px-4 sm:px-8 py-8 bg-slate-50 dark:bg-zinc-950">
       <div className="max-w-3xl mx-auto space-y-8">
@@ -65,7 +72,10 @@ export function MicCalibrationView({
             </h1>
             <p className="mt-1 text-sm text-slate-600 dark:text-zinc-400">
               Ajusta el filtro para que el rasgueo de tu guitarra o piano no
-              dispare cambios de línea por error mientras cantas.
+              dispare cambios de línea por error mientras cantas ·{" "}
+              <span className="font-medium text-slate-800 dark:text-zinc-200">
+                {permissionLabel}
+              </span>
             </p>
           </div>
           <button
@@ -120,12 +130,12 @@ export function MicCalibrationView({
           <div className="flex flex-wrap items-center justify-between gap-4">
             <div>
               <h2 className="font-display text-base font-semibold text-slate-900 dark:text-zinc-100">
-                2. Prueba tu rasgueo y ajusta el umbral de voz
+                2. Activa el micrófono y ajusta el umbral de voz
               </h2>
               <p className="mt-1 text-xs text-slate-500 dark:text-zinc-400">
-                Toca solo el instrumento durante 3 segundos y coloca el umbral
-                justo por encima de la barra gris/ámbar. Al cantar, la barra
-                debe cruzarlo en verde.
+                Al pulsar el botón el navegador pedirá permiso real del
+                micrófono. Toca solo el instrumento y coloca el umbral por
+                encima de la barra gris/ámbar.
               </p>
             </div>
             <button
@@ -145,7 +155,7 @@ export function MicCalibrationView({
               ) : (
                 <>
                   <Mic className="w-4 h-4" />
-                  Probar micrófono
+                  Activar y probar micrófono
                 </>
               )}
             </button>
@@ -227,7 +237,7 @@ export function MicCalibrationView({
             3. Motor de reconocimiento y prueba rápida
           </h2>
 
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
             <button
               type="button"
               onClick={() => onChangeMode("voice_local")}
@@ -239,10 +249,26 @@ export function MicCalibrationView({
               }`}
             >
               <div className="text-sm font-semibold text-slate-900 dark:text-zinc-100">
-                Voz en Vivo (Local)
+                Palabras en Vivo
               </div>
               <p className="mt-1 text-xs text-slate-500 dark:text-zinc-400">
-                Respuesta instantánea palabra por palabra sin latencia.
+                Coincidencia exacta de palabras (Chrome, Edge, Safari).
+              </p>
+            </button>
+            <button
+              type="button"
+              onClick={() => onChangeMode("vocal_cadence")}
+              className={`p-3 rounded-lg border text-left cursor-pointer ${
+                mode === "vocal_cadence"
+                  ? "border-amber-500 bg-amber-500/10"
+                  : "border-slate-200 dark:border-zinc-800"
+              }`}
+            >
+              <div className="text-sm font-semibold text-slate-900 dark:text-zinc-100">
+                Voz DSP (Universal)
+              </div>
+              <p className="mt-1 text-xs text-slate-500 dark:text-zinc-400">
+                Funciona en Opera, Firefox y offline: avanza al detectar tu voz.
               </p>
             </button>
             <button
@@ -255,10 +281,10 @@ export function MicCalibrationView({
               }`}
             >
               <div className="text-sm font-semibold text-slate-900 dark:text-zinc-100">
-                Ambiente Ruidoso (IA)
+                IA Ruidoso
               </div>
               <p className="mt-1 text-xs text-slate-500 dark:text-zinc-400">
-                Transcribe voz cantada sobre instrumentos fuertes cada 3s.
+                Transcribe voz sobre banda/guitarra (requiere servidor Node).
               </p>
             </button>
             <button
@@ -274,7 +300,7 @@ export function MicCalibrationView({
                 Auto-Ritmo (BPM)
               </div>
               <p className="mt-1 text-xs text-slate-500 dark:text-zinc-400">
-                Avance automático por compás si prefieres silenciar el micro.
+                Avance automático por compás sin micrófono.
               </p>
             </button>
           </div>
