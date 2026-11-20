@@ -68,6 +68,7 @@ export interface UseVoiceTrackerOptions {
   mode: TrackingMode;
   instrumentProfile: InstrumentProfile;
   noiseGate: number; // 0..100
+  leadAheadSec?: number; // 0..3 seconds ahead to compensate speech latency
 }
 
 export interface VoiceTrackerState {
@@ -100,6 +101,7 @@ export function useVoiceTracker({
   mode,
   instrumentProfile,
   noiseGate,
+  leadAheadSec = 1.5,
 }: UseVoiceTrackerOptions): VoiceTrackerState {
   const [isListening, setIsListening] = useState(false);
   const [isWordEngineActive, setIsWordEngineActive] = useState(false);
@@ -129,6 +131,7 @@ export function useVoiceTracker({
   const modeRef = useRef(mode);
   const bpmRef = useRef(bpm);
   const notationRef = useRef(notation);
+  const leadAheadRef = useRef(leadAheadSec);
 
   const lastVoiceTimestampRef = useRef(0);
   const lastWordMatchTimestampRef = useRef(0);
@@ -174,6 +177,10 @@ export function useVoiceTracker({
     notationRef.current = notation;
   }, [notation]);
 
+  useEffect(() => {
+    leadAheadRef.current = leadAheadSec;
+  }, [leadAheadSec]);
+
   // Query real browser mic permission status
   useEffect(() => {
     if (
@@ -213,6 +220,9 @@ export function useVoiceTracker({
       const cleaned = phrase.trim();
       if (!cleaned) return;
 
+      // Always display what the mic is hearing so the musician can verify detection
+      setLastTranscript(cleaned);
+
       if (!bypassGate) {
         const msSinceVoice = Date.now() - lastVoiceTimestampRef.current;
         if (msSinceVoice > 2400 && noiseGateRef.current > 15) {
@@ -220,12 +230,11 @@ export function useVoiceTracker({
         }
       }
 
-      setLastTranscript(cleaned);
-
       const match = matchTranscriptToLine(
         cleaned,
         flatLinesRef.current,
-        activeLineRef.current
+        activeLineRef.current,
+        leadAheadRef.current
       );
 
       if (!match) return;
@@ -373,25 +382,36 @@ export function useVoiceTracker({
         return;
       }
 
-      // Smoothly advance wordProgress while singing, calibrated by syllables & BPM
+      // Smoothly advance wordProgress while singing, calibrated by syllables, BPM, and leadAheadSec
       const charCount = Math.max(20, current.line.lyrics.trim().length);
-      const estimatedLineMs = Math.max(
-        2600,
-        (charCount / 9.5) * (60000 / Math.max(55, bpmRef.current)) * 2.25
+      const baseLineMs = Math.max(
+        2400,
+        (charCount / 9.5) * (60000 / Math.max(55, bpmRef.current)) * 2.2
       );
-      const step = 120 / estimatedLineMs;
+      const effectiveLineMs = Math.max(
+        1600,
+        baseLineMs - leadAheadRef.current * 450
+      );
+      const step = 120 / effectiveLineMs;
       const nextProgress = Math.min(1, lineProgressRef.current + step);
+      const leadAdvanceThreshold = Math.max(
+        0.68,
+        0.96 - leadAheadRef.current * 0.12
+      );
 
-      // When word engine is working, cap rhythmic drift at 0.90 so words trigger the next line cleanly
+      // When word engine is working, cap rhythmic drift so words + breath trigger cleanly
       if (wordEngineWorkingRef.current) {
-        const capped = Math.min(0.9, nextProgress);
+        const capped = Math.min(0.88, nextProgress);
         lineProgressRef.current = capped;
         onAdvanceToLine(idx, capped);
         return;
       }
 
-      // Without word engine (Opera/Firefox), advance +1 line once the line's full sung duration completes
-      if (nextProgress >= 1 && now - lineEnteredTimestampRef.current > 2000) {
+      // Without word engine (Opera/Firefox), advance +1 line ahead by leadAheadSec
+      if (
+        nextProgress >= leadAdvanceThreshold &&
+        now - lineEnteredTimestampRef.current > 1700
+      ) {
         let nextIdx = idx + 1;
         while (
           nextIdx < lines.length &&

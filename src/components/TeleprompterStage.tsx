@@ -8,6 +8,7 @@ import {
   Minus,
   Moon,
   Music2,
+  Play,
   Plus,
   RotateCcw,
   Sun,
@@ -50,6 +51,7 @@ interface TeleprompterStageProps {
   onSelectLine: (index: number) => void;
   onEditSong: () => void;
   isListening: boolean;
+  onStartListening: () => void;
 }
 
 interface ChordSegment {
@@ -123,6 +125,7 @@ export function TeleprompterStage({
   onSelectLine,
   onEditSong,
   isListening,
+  onStartListening,
 }: TeleprompterStageProps) {
   const lineRefs = useRef<Record<number, HTMLDivElement | null>>({});
 
@@ -413,8 +416,30 @@ export function TeleprompterStage({
       </div>
 
       {/* Main Karaoke Teleprompter Canvas */}
-      <div className="flex-1 overflow-y-auto stage-scroll px-4 sm:px-10 py-10">
+      <div className="flex-1 overflow-y-auto stage-scroll px-4 sm:px-10 py-8">
         <div className="max-w-4xl mx-auto space-y-10 pb-36">
+          {!isListening && (
+            <div className="rounded-xl border border-amber-500/35 bg-amber-500/10 px-5 py-4 flex flex-wrap items-center justify-between gap-4">
+              <div>
+                <p className="font-display text-base font-semibold text-slate-900 dark:text-zinc-50">
+                  Listo para empezar esta canción
+                </p>
+                <p className="text-xs text-slate-600 dark:text-zinc-300 mt-0.5">
+                  Pulsa Start para activar el micrófono, ver en vivo lo que
+                  detecta y avanzar la letra automáticamente.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={onStartListening}
+                className="inline-flex items-center gap-2 px-5 py-2.5 text-sm font-semibold rounded-lg bg-amber-500 text-zinc-950 hover:bg-amber-400 active:scale-[0.98] transition-all whitespace-nowrap shrink-0 cursor-pointer"
+              >
+                <Play className="w-4 h-4 fill-current" />
+                Start — Comenzar
+              </button>
+            </div>
+          )}
+
           {song.sections.map((section) => (
             <section key={section.id} className="space-y-4">
               <h2 className="font-display text-xs font-semibold tracking-wider text-slate-400 dark:text-zinc-500 uppercase">

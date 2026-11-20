@@ -31,6 +31,7 @@ interface SavedPrefs {
   instrumentProfile: InstrumentProfile;
   noiseGate: number;
   mode: TrackingMode;
+  leadAheadSec: number;
 }
 
 const DEFAULT_PREFS: SavedPrefs = {
@@ -42,6 +43,7 @@ const DEFAULT_PREFS: SavedPrefs = {
   instrumentProfile: "acoustic_guitar",
   noiseGate: 22,
   mode: "hybrid",
+  leadAheadSec: 1.5,
 };
 
 function loadInitialSongs(): Song[] {
@@ -185,7 +187,13 @@ export default function App() {
     mode: effectiveMode,
     instrumentProfile: prefs.instrumentProfile,
     noiseGate: prefs.noiseGate,
+    leadAheadSec: prefs.leadAheadSec,
   });
+
+  const currentSectionName =
+    flatLines[activeLineIndex]?.sectionName ||
+    activeSong.sections[0]?.name ||
+    "";
 
   // Reset active line when changing song
   const handleSelectSong = useCallback(
@@ -333,6 +341,13 @@ export default function App() {
                 onChangeNoiseGate={(noiseGate) =>
                   setPrefs((p) => ({ ...p, noiseGate }))
                 }
+                leadAheadSec={prefs.leadAheadSec}
+                onChangeLeadAhead={(leadAheadSec) =>
+                  setPrefs((p) => ({ ...p, leadAheadSec }))
+                }
+                currentSectionName={currentSectionName}
+                currentLineNumber={Math.min(flatLines.length, activeLineIndex + 1)}
+                totalLines={flatLines.length}
                 onOpenCalibration={() => setActiveView("calibrate")}
               />
               <TeleprompterStage
@@ -378,6 +393,10 @@ export default function App() {
                 }}
                 onEditSong={() => setIsEditModalOpen(true)}
                 isListening={tracker.isListening}
+                onStartListening={() => {
+                  if (tracker.isListening) tracker.stop();
+                  else tracker.start();
+                }}
               />
             </>
           ) : (

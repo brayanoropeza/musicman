@@ -168,6 +168,43 @@ function evaluateCandidateLine(
 }
 
 /**
+ * Compensates for speech/audio processing latency by advancing to the next sung line
+ * slightly before the current line finishes, proportional to leadAheadSec.
+ */
+function applyLeadAhead(
+  result: MatchResult,
+  flatLines: FlatSongLine[],
+  leadAheadSec: number
+): MatchResult {
+  if (leadAheadSec <= 0) return result;
+
+  const advanceThreshold = Math.max(0.65, 0.94 - leadAheadSec * 0.14);
+  if (result.wordProgress < advanceThreshold) {
+    return result;
+  }
+
+  let nextIdx = result.matchedLineIndex + 1;
+  while (
+    nextIdx < flatLines.length &&
+    (flatLines[nextIdx].line.isInstrumental ||
+      flatLines[nextIdx].line.isTablature)
+  ) {
+    nextIdx++;
+  }
+
+  if (nextIdx >= flatLines.length) {
+    return result;
+  }
+
+  return {
+    ...result,
+    matchedLineIndex: nextIdx,
+    wordProgress: 0.08,
+    sectionName: flatLines[nextIdx].sectionName,
+  };
+}
+
+/**
  * Two-tier lyric matcher:
  * 1. Local tracking (current & next 2 sung lines) for smooth line-by-line progression.
  * 2. Global stanza resync across the ENTIRE song when the singer is clearly on another
@@ -176,7 +213,8 @@ function evaluateCandidateLine(
 export function matchTranscriptToLine(
   recentPhrase: string,
   flatLines: FlatSongLine[],
-  currentLineIndex: number
+  currentLineIndex: number,
+  leadAheadSec = 1.5
 ): MatchResult | null {
   const heardWords = tokenizeNormalized(recentPhrase);
   if (heardWords.length === 0 || flatLines.length === 0) return null;
@@ -240,13 +278,17 @@ export function matchTranscriptToLine(
       }
     }
 
-    if (strongResyncHit) return strongResyncHit;
+    if (strongResyncHit) return applyLeadAhead(strongResyncHit, flatLines, leadAheadSec);
 
-    return {
-      matchedLineIndex: currentLineIndex,
-      wordProgress: currentEval.progress,
-      confidence: Math.min(1, currentEval.totalScore / 2.2),
-    };
+    return applyLeadAhead(
+      {
+        matchedLineIndex: currentLineIndex,
+        wordProgress: currentEval.progress,
+        confidence: Math.min(1, currentEval.totalScore / 2.2),
+      },
+      flatLines,
+      leadAheadSec
+    );
   }
 
   let bestLocal: MatchResult | null = null;
@@ -284,7 +326,7 @@ export function matchTranscriptToLine(
     }
   }
 
-  if (bestLocal) return bestLocal;
+  if (bestLocal) return applyLeadAhead(bestLocal, flatLines, leadAheadSec);
 
   // --- Tier 2: Global Stanza Resync (when teleprompter fell behind or singer jumped sections) ---
   let bestResync: MatchResult | null = null;
@@ -320,5 +362,7 @@ export function matchTranscriptToLine(
     }
   }
 
-  return bestResync;
+  return bestResync
+    ? applyLeadAhead(bestResync, flatLines, leadAheadSec)
+    : null;
 }

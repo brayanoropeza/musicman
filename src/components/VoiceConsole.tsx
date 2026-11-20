@@ -1,4 +1,4 @@
-import { Mic, MicOff, SlidersHorizontal } from "lucide-react";
+import { Play, SlidersHorizontal, Square } from "lucide-react";
 import { InstrumentProfile, TrackingMode } from "../types/song";
 import { VoiceTrackerState } from "../hooks/useVoiceTracker";
 
@@ -10,6 +10,11 @@ interface VoiceConsoleProps {
   onChangeInstrument: (profile: InstrumentProfile) => void;
   noiseGate: number;
   onChangeNoiseGate: (value: number) => void;
+  leadAheadSec: number;
+  onChangeLeadAhead: (sec: number) => void;
+  currentSectionName: string;
+  currentLineNumber: number;
+  totalLines: number;
   onOpenCalibration: () => void;
 }
 
@@ -21,11 +26,17 @@ export function VoiceConsole({
   onChangeInstrument,
   noiseGate,
   onChangeNoiseGate,
+  leadAheadSec,
+  onChangeLeadAhead,
+  currentSectionName,
+  currentLineNumber,
+  totalLines,
   onOpenCalibration,
 }: VoiceConsoleProps) {
   const {
     isListening,
     isSpeechSupported,
+    isWordEngineActive,
     permissionState,
     activeEngineNote,
     rawLevel,
@@ -43,10 +54,10 @@ export function VoiceConsole({
   return (
     <section
       aria-label="Control de micrófono y seguimiento"
-      className="border-b border-slate-200 dark:border-zinc-800 bg-slate-50/80 dark:bg-zinc-900/60 px-4 sm:px-6 py-3"
+      className="border-b border-slate-200 dark:border-zinc-800 bg-slate-50/80 dark:bg-zinc-900/60 px-4 sm:px-6 py-3 space-y-2.5"
     >
-      <div className="max-w-6xl mx-auto flex flex-wrap items-center justify-between gap-4">
-        {/* Primary Mic Start Button + Unified Mode Selector */}
+      <div className="max-w-6xl mx-auto flex flex-wrap items-center justify-between gap-3">
+        {/* Primary Start / Stop Button + Unified Mode Selector */}
         <div className="flex flex-wrap items-center gap-3">
           <button
             type="button"
@@ -59,15 +70,15 @@ export function VoiceConsole({
           >
             {isListening ? (
               <>
-                <MicOff className="w-4 h-4" />
-                Detener Micrófono
+                <Square className="w-3.5 h-3.5 fill-current" />
+                Detener
               </>
             ) : (
               <>
-                <Mic className="w-4 h-4" />
+                <Play className="w-3.5 h-3.5 fill-current" />
                 {mode === "auto_tempo"
-                  ? "Empezar Auto-Ritmo"
-                  : "Empezar (Activar Micrófono)"}
+                  ? "Start Auto-Ritmo"
+                  : "Start (Activar Micrófono)"}
               </>
             )}
           </button>
@@ -80,7 +91,7 @@ export function VoiceConsole({
             <button
               type="button"
               onClick={() => onChangeMode("hybrid")}
-              title="Combina detección de palabras, nota musical cantada y ritmo BPM con freno anti-adelanto"
+              title="Combina detección de palabras, nota musical cantada y ritmo BPM"
               className={`px-2.5 py-1.5 text-xs font-medium rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
                 mode === "hybrid"
                   ? "bg-white dark:bg-zinc-950 text-slate-900 dark:text-zinc-100 shadow-xs"
@@ -95,7 +106,7 @@ export function VoiceConsole({
               disabled={!isSpeechSupported}
               title={
                 isSpeechSupported
-                  ? "Avanza estrictamente al coincidir las palabras cantadas (nunca por ritmo solo)"
+                  ? "Avanza estrictamente al coincidir las palabras cantadas"
                   : "No disponible en este navegador; usa Híbrido"
               }
               className={`px-2.5 py-1.5 text-xs font-medium rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed ${
@@ -131,9 +142,32 @@ export function VoiceConsole({
           </div>
         </div>
 
-        {/* Instrument Filter + Live Pitch Note + Vocal Energy Meter */}
-        <div className="flex flex-wrap items-center gap-4">
-          <div className="flex items-center gap-2">
+        {/* Lead-Ahead + Instrument Filter + Vocal Energy Meter */}
+        <div className="flex flex-wrap items-center gap-3">
+          {mode !== "auto_tempo" && (
+            <div className="flex items-center gap-1.5">
+              <label
+                htmlFor="lead-ahead-select"
+                className="text-xs text-slate-500 dark:text-zinc-400 whitespace-nowrap"
+              >
+                Anticipación:
+              </label>
+              <select
+                id="lead-ahead-select"
+                value={leadAheadSec}
+                onChange={(e) => onChangeLeadAhead(Number(e.target.value))}
+                title="Adelanta la lectura unos segundos para compensar el retraso de procesamiento al cantar"
+                className="px-2 py-1.5 text-xs font-mono font-medium rounded-md bg-white dark:bg-zinc-950 border border-slate-200 dark:border-zinc-800 text-slate-900 dark:text-zinc-100 focus:outline-none focus:border-amber-500"
+              >
+                <option value={0}>0s (Exacto)</option>
+                <option value={1}>+1.0s</option>
+                <option value={1.5}>+1.5s</option>
+                <option value={2.5}>+2.5s</option>
+              </select>
+            </div>
+          )}
+
+          <div className="flex items-center gap-1.5">
             <label
               htmlFor="instrument-profile-select"
               className="text-xs text-slate-500 dark:text-zinc-400 whitespace-nowrap"
@@ -146,7 +180,7 @@ export function VoiceConsole({
               onChange={(e) =>
                 onChangeInstrument(e.target.value as InstrumentProfile)
               }
-              className="px-2.5 py-1.5 text-xs font-medium rounded-md bg-white dark:bg-zinc-950 border border-slate-200 dark:border-zinc-800 text-slate-900 dark:text-zinc-100 focus:outline-none focus:border-amber-500"
+              className="px-2 py-1.5 text-xs font-medium rounded-md bg-white dark:bg-zinc-950 border border-slate-200 dark:border-zinc-800 text-slate-900 dark:text-zinc-100 focus:outline-none focus:border-amber-500"
             >
               <option value="acoustic_guitar">Guitarra Acústica (210 Hz)</option>
               <option value="electric_guitar">Guitarra Eléctrica (250 Hz)</option>
@@ -156,19 +190,19 @@ export function VoiceConsole({
           </div>
 
           {mode !== "auto_tempo" && (
-            <div className="flex items-center gap-3">
-              <div className="w-40 sm:w-48 space-y-1">
+            <div className="flex items-center gap-2.5">
+              <div className="w-36 sm:w-44 space-y-1">
                 <div className="flex items-center justify-between text-[11px] text-slate-500 dark:text-zinc-400">
                   <span>
                     {isListening
                       ? isVoiceActive
                         ? detectedNote
                           ? `Nota ${detectedNote}`
-                          : "Voz detectada"
+                          : "Voz activa"
                         : "Solo instrumento"
                       : permissionState === "denied"
                       ? "Micrófono bloqueado"
-                      : "Listo para empezar"}
+                      : "Micrófono listo"}
                   </span>
                   <span className="font-mono">
                     {detectedHz ? `${detectedHz}Hz` : `${vocalLevel}%`}
@@ -193,7 +227,7 @@ export function VoiceConsole({
                 </div>
               </div>
 
-              <div className="hidden sm:flex items-center gap-1.5">
+              <div className="hidden xl:flex items-center gap-1.5">
                 <label
                   htmlFor="noise-gate-mini"
                   className="text-[11px] text-slate-500 dark:text-zinc-400 whitespace-nowrap"
@@ -225,21 +259,48 @@ export function VoiceConsole({
         </div>
       </div>
 
-      {/* Live status / transcript / error row */}
-      {(lastTranscript || errorMessage || activeEngineNote || isProcessingAiClip) && (
-        <div className="max-w-6xl mx-auto mt-2 flex flex-wrap items-center justify-between gap-2 text-xs">
+      {/* Always-visible Live Detection Monitor when active or when error exists */}
+      {(isListening || errorMessage) && (
+        <div className="max-w-6xl mx-auto rounded-lg border border-slate-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 px-3.5 py-2 flex flex-wrap items-center justify-between gap-x-6 gap-y-1 text-xs">
           {errorMessage ? (
             <p className="text-red-600 dark:text-red-400 font-medium">
               {errorMessage}
             </p>
           ) : (
-            <p className="text-slate-500 dark:text-zinc-400 truncate max-w-3xl">
-              {isProcessingAiClip
-                ? "Analizando fragmento vocal con IA..."
-                : lastTranscript
-                ? `Escuchando: "${lastTranscript}"`
-                : activeEngineNote}
-            </p>
+            <>
+              <div className="flex items-center gap-2 min-w-0 flex-1">
+                <span className="font-semibold text-slate-700 dark:text-zinc-300 shrink-0">
+                  Lo que detecta:
+                </span>
+                <span className="text-slate-900 dark:text-zinc-100 truncate">
+                  {isProcessingAiClip
+                    ? "Transcribiendo voz con IA..."
+                    : lastTranscript
+                    ? `“${lastTranscript}”`
+                    : isWordEngineActive
+                    ? "Escuchando... canta o di una frase para ver tus palabras aquí"
+                    : activeEngineNote || "Detectando voz por nota y ritmo"}
+                </span>
+              </div>
+
+              <div className="flex items-center gap-3 text-slate-500 dark:text-zinc-400 shrink-0">
+                {detectedNote && (
+                  <span className="font-mono text-emerald-700 dark:text-emerald-400 font-semibold">
+                    Nota: {detectedNote}
+                  </span>
+                )}
+                <span>
+                  Ubicado en:{" "}
+                  <strong className="text-slate-800 dark:text-zinc-200">
+                    {currentSectionName}
+                  </strong>{" "}
+                  ·{" "}
+                  <span className="font-mono">
+                    Línea {currentLineNumber}/{totalLines}
+                  </span>
+                </span>
+              </div>
+            </>
           )}
         </div>
       )}
