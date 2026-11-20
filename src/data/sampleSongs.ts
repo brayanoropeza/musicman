@@ -142,16 +142,25 @@ export const SAMPLE_SONGS: Song[] = [
     sections: [
       {
         id: "lb-intro",
-        name: "Intro (Riff)",
+        name: "Intro (Tablatura)",
         lines: [
           {
             id: "lb-i1",
             lyrics: "(Riff principal x4 — C F G)",
             isInstrumental: true,
+            isTablature: true,
             chords: [
               { chord: "C", column: 0 },
               { chord: "F", column: 12 },
               { chord: "G", column: 22 },
+            ],
+            tabLines: [
+              "e|--------------------------|",
+              "B|-------------1--0---------|",
+              "G|---------0---------2--0---|",
+              "D|------2-----3--2--0-------|",
+              "A|---3----------------------|",
+              "E|--------------------------|",
             ],
           },
         ],

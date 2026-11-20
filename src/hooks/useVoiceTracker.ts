@@ -423,11 +423,17 @@ export function useVoiceTracker({
               }),
             });
 
-            if (res.ok) {
+            const contentType = res.headers.get("content-type") || "";
+            if (res.ok && contentType.includes("application/json")) {
               const data = (await res.json()) as { transcript?: string };
               if (data.transcript) {
                 handleTranscriptText(data.transcript, true);
               }
+            } else if (res.status === 404 || res.status === 405) {
+              setErrorMessage(
+                "El modo 'Ambiente Ruidoso (IA)' requiere servidor Node. Usa 'Voz en Vivo' o 'Auto-Ritmo' en hosting estático."
+              );
+              stop();
             }
           } catch (err) {
             console.error("AI audio clip sync failed:", err);

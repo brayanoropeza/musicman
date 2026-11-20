@@ -8,6 +8,8 @@ export interface SongLine {
   lyrics: string;
   chords: ChordPlacement[];
   isInstrumental?: boolean;
+  isTablature?: boolean;
+  tabLines?: string[];
 }
 
 export interface SongSection {
@@ -44,5 +46,7 @@ export type InstrumentProfile =
 export type TrackingMode = "voice_local" | "voice_ai" | "auto_tempo";
 
 export type NotationSystem = "american" | "latin";
+
+export type StageDisplayMode = "chords_tabs" | "lyrics_only";
 
 export type AppView = "stage" | "calibrate";

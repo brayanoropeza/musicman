@@ -7,6 +7,7 @@ import {
   Minimize2,
   Minus,
   Moon,
+  Music2,
   Plus,
   RotateCcw,
   Sun,
@@ -16,12 +17,15 @@ import {
   FlatSongLine,
   NotationSystem,
   Song,
+  StageDisplayMode,
 } from "../types/song";
 import {
   formatKeyName,
   getCapoHint,
+  getMusicalScaleInfo,
   getScaleOptions,
   transposeChord,
+  transposeTabLine,
 } from "../utils/chords";
 
 interface TeleprompterStageProps {
@@ -33,6 +37,10 @@ interface TeleprompterStageProps {
   onChangeTranspose: (semitones: number) => void;
   notation: NotationSystem;
   onChangeNotation: (notation: NotationSystem) => void;
+  displayMode: StageDisplayMode;
+  onChangeDisplayMode: (mode: StageDisplayMode) => void;
+  showScaleGuide: boolean;
+  onToggleScaleGuide: () => void;
   fontSizePx: number;
   onChangeFontSize: (px: number) => void;
   isDarkMode: boolean;
@@ -102,6 +110,10 @@ export function TeleprompterStage({
   onChangeTranspose,
   notation,
   onChangeNotation,
+  displayMode,
+  onChangeDisplayMode,
+  showScaleGuide,
+  onToggleScaleGuide,
   fontSizePx,
   onChangeFontSize,
   isDarkMode,
@@ -119,6 +131,11 @@ export function TeleprompterStage({
     [song.originalKey, notation]
   );
 
+  const scaleInfo = useMemo(
+    () => getMusicalScaleInfo(song.originalKey, transposeSemitones, notation),
+    [song.originalKey, transposeSemitones, notation]
+  );
+
   const currentKeyLabel = formatKeyName(
     song.originalKey,
     transposeSemitones,
@@ -126,7 +143,6 @@ export function TeleprompterStage({
   );
   const capoHint = getCapoHint(transposeSemitones);
 
-  // Smoothly keep the active line in the comfortable upper-center reading zone
   useEffect(() => {
     const el = lineRefs.current[activeLineIndex];
     if (el) {
@@ -137,7 +153,6 @@ export function TeleprompterStage({
     }
   }, [activeLineIndex, song.id]);
 
-  // Precompute global index lookup by line id
   const lineGlobalMap = useMemo(() => {
     const map = new Map<string, number>();
     for (const item of flatLines) {
@@ -161,7 +176,7 @@ export function TeleprompterStage({
                 type="button"
                 onClick={onEditSong}
                 className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium rounded-md border border-slate-200 dark:border-zinc-800 text-slate-600 dark:text-zinc-400 hover:text-slate-900 dark:hover:text-zinc-100 hover:bg-slate-50 dark:hover:bg-zinc-900 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-                title="Editar letra o acordes"
+                title="Editar letra, acordes o tablatura"
               >
                 <Edit3 className="w-3.5 h-3.5" />
                 Editar
@@ -184,7 +199,7 @@ export function TeleprompterStage({
             </div>
           </div>
 
-          {/* Musician Controls: Scale Transpose, Notation, Font Size, Theme, Fullscreen */}
+          {/* Musician Controls */}
           <div className="flex flex-wrap items-center gap-2.5">
             {/* Vocal Scale Transposer */}
             <div className="flex items-center rounded-lg border border-slate-200 dark:border-zinc-800 bg-slate-50 dark:bg-zinc-900 p-0.5">
@@ -231,6 +246,51 @@ export function TeleprompterStage({
                 <Plus className="w-3.5 h-3.5" />
               </button>
             </div>
+
+            {/* Display Mode: Acordes y Tabs vs Solo Letra */}
+            <div
+              role="group"
+              aria-label="Modo de visualización"
+              className="flex items-center gap-0.5 p-0.5 rounded-lg border border-slate-200 dark:border-zinc-800 bg-slate-50 dark:bg-zinc-900"
+            >
+              <button
+                type="button"
+                onClick={() => onChangeDisplayMode("chords_tabs")}
+                className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                  displayMode === "chords_tabs"
+                    ? "bg-white dark:bg-zinc-800 text-slate-900 dark:text-zinc-50 shadow-xs"
+                    : "text-slate-500 dark:text-zinc-400 hover:text-slate-900 dark:hover:text-zinc-200"
+                }`}
+              >
+                Acordes y Tabs
+              </button>
+              <button
+                type="button"
+                onClick={() => onChangeDisplayMode("lyrics_only")}
+                className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                  displayMode === "lyrics_only"
+                    ? "bg-white dark:bg-zinc-800 text-slate-900 dark:text-zinc-50 shadow-xs"
+                    : "text-slate-500 dark:text-zinc-400 hover:text-slate-900 dark:hover:text-zinc-200"
+                }`}
+              >
+                Solo Letra
+              </button>
+            </div>
+
+            {/* Scale Guide Toggle */}
+            <button
+              type="button"
+              onClick={onToggleScaleGuide}
+              className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-lg border transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                showScaleGuide
+                  ? "border-amber-500/60 bg-amber-500/10 text-amber-700 dark:text-amber-300"
+                  : "border-slate-200 dark:border-zinc-800 text-slate-600 dark:text-zinc-300 hover:bg-slate-50 dark:hover:bg-zinc-900"
+              }`}
+              title="Mostrar notas y acordes de la escala activa"
+            >
+              <Music2 className="w-3.5 h-3.5" />
+              Escala
+            </button>
 
             {/* Notation Switch: American vs Latin */}
             <div
@@ -287,8 +347,16 @@ export function TeleprompterStage({
               type="button"
               onClick={onToggleTheme}
               className="p-2 rounded-lg border border-slate-200 dark:border-zinc-800 text-slate-600 dark:text-zinc-300 hover:bg-slate-50 dark:hover:bg-zinc-900 transition-colors cursor-pointer"
-              title={isDarkMode ? "Cambiar a Papel Claro" : "Cambiar a Escenario Oscuro"}
-              aria-label={isDarkMode ? "Cambiar a Papel Claro" : "Cambiar a Escenario Oscuro"}
+              title={
+                isDarkMode
+                  ? "Cambiar a Papel Claro"
+                  : "Cambiar a Escenario Oscuro"
+              }
+              aria-label={
+                isDarkMode
+                  ? "Cambiar a Papel Claro"
+                  : "Cambiar a Escenario Oscuro"
+              }
             >
               {isDarkMode ? (
                 <Sun className="w-4 h-4" />
@@ -302,8 +370,14 @@ export function TeleprompterStage({
               type="button"
               onClick={onToggleFullscreen}
               className="p-2 rounded-lg border border-slate-200 dark:border-zinc-800 text-slate-600 dark:text-zinc-300 hover:bg-slate-50 dark:hover:bg-zinc-900 transition-colors cursor-pointer"
-              title={isFullscreen ? "Salir de pantalla completa" : "Modo Escenario (Pantalla Completa)"}
-              aria-label={isFullscreen ? "Salir de pantalla completa" : "Modo Escenario"}
+              title={
+                isFullscreen
+                  ? "Salir de pantalla completa"
+                  : "Modo Escenario (Pantalla Completa)"
+              }
+              aria-label={
+                isFullscreen ? "Salir de pantalla completa" : "Modo Escenario"
+              }
             >
               {isFullscreen ? (
                 <Minimize2 className="w-4 h-4" />
@@ -313,6 +387,29 @@ export function TeleprompterStage({
             </button>
           </div>
         </div>
+
+        {/* Active Scale Reference Strip */}
+        {showScaleGuide && (
+          <div className="max-w-6xl mx-auto mt-3 pt-3 border-t border-slate-200 dark:border-zinc-800 flex flex-wrap items-center justify-between gap-x-6 gap-y-2 text-xs">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="font-semibold text-slate-700 dark:text-zinc-300">
+                Escala de {scaleInfo.keyName} {scaleInfo.modeLabel}:
+              </span>
+              <span className="font-mono text-amber-700 dark:text-amber-400">
+                {scaleInfo.notes.join(" · ")}
+              </span>
+            </div>
+            <div className="flex flex-wrap items-center gap-2 text-slate-600 dark:text-zinc-400">
+              <span>Acordes del tono:</span>
+              <span className="font-mono text-slate-800 dark:text-zinc-200">
+                {scaleInfo.diatonicChords
+                  .slice(0, 6)
+                  .map((item) => `${item.degree}: ${item.chord}`)
+                  .join(" · ")}
+              </span>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Main Karaoke Teleprompter Canvas */}
@@ -326,18 +423,25 @@ export function TeleprompterStage({
 
               <div className="space-y-5">
                 {section.lines.map((line) => {
+                  // Hide purely instrumental/tab blocks when user picks "Solo Letra"
+                  if (
+                    displayMode === "lyrics_only" &&
+                    (line.isInstrumental || line.isTablature)
+                  ) {
+                    return null;
+                  }
+
                   const globalIdx = lineGlobalMap.get(line.id) ?? 0;
                   const isActive = globalIdx === activeLineIndex;
                   const isPast = globalIdx < activeLineIndex;
 
                   const segments = buildAlignedSegments(
                     line.lyrics,
-                    line.chords,
+                    displayMode === "chords_tabs" ? line.chords : [],
                     transposeSemitones,
                     notation
                   );
 
-                  // Calculate total character length for smooth karaoke sweep across active line
                   const totalChars = Math.max(1, line.lyrics.length);
                   const illuminatedCharLimit = isActive
                     ? Math.round(wordProgress * totalChars)
@@ -368,14 +472,52 @@ export function TeleprompterStage({
                           : "opacity-80 hover:opacity-100 hover:bg-slate-50 dark:hover:bg-zinc-900/40"
                       }`}
                     >
-                      {line.isInstrumental ? (
+                      {line.isTablature &&
+                      line.tabLines &&
+                      line.tabLines.length > 0 ? (
+                        <div className="space-y-2">
+                          {line.chords.length > 0 && (
+                            <div className="flex flex-wrap items-center gap-4">
+                              {line.chords.map((c, cIdx) => (
+                                <span
+                                  key={`${line.id}-tabc-${cIdx}`}
+                                  className="font-mono font-bold text-amber-700 dark:text-amber-400"
+                                  style={{
+                                    fontSize: `${Math.max(15, fontSizePx * 0.65)}px`,
+                                  }}
+                                >
+                                  {transposeChord(
+                                    c.chord,
+                                    transposeSemitones,
+                                    notation
+                                  )}
+                                </span>
+                              ))}
+                            </div>
+                          )}
+                          <pre className="font-mono text-xs sm:text-sm leading-snug text-slate-800 dark:text-zinc-200 overflow-x-auto py-1">
+                            {line.tabLines
+                              .map((tl) =>
+                                transposeTabLine(tl, transposeSemitones)
+                              )
+                              .join("\n")}
+                          </pre>
+                          {line.lyrics && (
+                            <p className="text-xs italic text-slate-500 dark:text-zinc-400">
+                              {line.lyrics}
+                            </p>
+                          )}
+                        </div>
+                      ) : line.isInstrumental ? (
                         <div className="space-y-1.5">
                           <div className="flex flex-wrap items-center gap-4">
                             {line.chords.map((c, cIdx) => (
                               <span
                                 key={`${line.id}-inst-${cIdx}`}
                                 className="font-mono font-bold text-amber-700 dark:text-amber-400"
-                                style={{ fontSize: `${Math.max(16, fontSizePx * 0.72)}px` }}
+                                style={{
+                                  fontSize: `${Math.max(16, fontSizePx * 0.72)}px`,
+                                }}
                               >
                                 {transposeChord(
                                   c.chord,
@@ -388,7 +530,9 @@ export function TeleprompterStage({
                           {line.lyrics && (
                             <p
                               className="italic text-slate-500 dark:text-zinc-400"
-                              style={{ fontSize: `${Math.max(15, fontSizePx * 0.65)}px` }}
+                              style={{
+                                fontSize: `${Math.max(15, fontSizePx * 0.65)}px`,
+                              }}
                             >
                               {line.lyrics}
                             </p>
@@ -400,7 +544,6 @@ export function TeleprompterStage({
                             const segStart = runningCharOffset;
                             runningCharOffset += seg.text.length;
 
-                            // Highlight portion of segment already sung in karaoke sweep
                             const charsSungInSeg = isActive
                               ? Math.max(
                                   0,
@@ -419,21 +562,21 @@ export function TeleprompterStage({
                                 key={`${line.id}-seg-${segIdx}`}
                                 className="inline-flex flex-col items-start whitespace-pre-wrap"
                               >
-                                {/* Chord Row */}
-                                <span
-                                  className={`font-mono font-bold min-h-[1.25em] pr-2 ${
-                                    isActive
-                                      ? "text-amber-700 dark:text-amber-400"
-                                      : "text-amber-600/85 dark:text-amber-400/80"
-                                  }`}
-                                  style={{
-                                    fontSize: `${Math.max(14, Math.round(fontSizePx * 0.62))}px`,
-                                  }}
-                                >
-                                  {seg.chord ? seg.chord : "\u00A0"}
-                                </span>
+                                {displayMode === "chords_tabs" && (
+                                  <span
+                                    className={`font-mono font-bold min-h-[1.25em] pr-2 ${
+                                      isActive
+                                        ? "text-amber-700 dark:text-amber-400"
+                                        : "text-amber-600/85 dark:text-amber-400/80"
+                                    }`}
+                                    style={{
+                                      fontSize: `${Math.max(14, Math.round(fontSizePx * 0.62))}px`,
+                                    }}
+                                  >
+                                    {seg.chord ? seg.chord : "\u00A0"}
+                                  </span>
+                                )}
 
-                                {/* Lyric Row with Karaoke Sweep */}
                                 <span
                                   className="font-medium tracking-tight"
                                   style={{

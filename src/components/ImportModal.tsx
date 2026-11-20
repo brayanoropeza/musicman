@@ -1,7 +1,11 @@
 import { useRef, useState } from "react";
 import { FileUp, Loader2, Sparkles, X } from "lucide-react";
 import { Song } from "../types/song";
-import { parseLaCuerdaText } from "../utils/chords";
+import {
+  alignChordsAndLyricsLocally,
+  parseLaCuerdaText,
+} from "../utils/chords";
+import { parsePdfLocally } from "../utils/pdfClientParser";
 
 interface ImportModalProps {
   isOpen: boolean;
@@ -21,6 +25,8 @@ interface ParsedSongPayload {
     lines?: Array<{
       lyrics?: string;
       isInstrumental?: boolean;
+      isTablature?: boolean;
+      tabLines?: string[];
       chords?: Array<{ chord?: string; column?: number }>;
     }>;
   }>;
@@ -49,6 +55,8 @@ function hydrateServerSong(
         id: mkId("line"),
         lyrics: l.lyrics ?? "",
         isInstrumental: Boolean(l.isInstrumental),
+        isTablature: Boolean(l.isTablature),
+        tabLines: Array.isArray(l.tabLines) ? l.tabLines : undefined,
         chords: (l.chords || [])
           .filter((c) => c.chord && c.chord.trim().length > 0)
           .map((c) => ({
@@ -74,6 +82,7 @@ export function ImportModal({
   // Paste tab state
   const [pasteTitle, setPasteTitle] = useState("");
   const [pasteArtist, setPasteArtist] = useState("");
+  const [pasteKey, setPasteKey] = useState("");
   const [pasteText, setPasteText] = useState("");
 
   // Combine Notes + Lyrics tab state
@@ -104,27 +113,36 @@ export function ImportModal({
       }
       const base64Data = btoa(binary);
 
-      const res = await fetch("/api/parse-pdf", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          fileName: file.name,
-          mimeType: "application/pdf",
-          base64Data,
-        }),
-      });
+      // Try full-stack AI PDF parser first; fall back seamlessly to browser pdfjs-dist when hosted statically (e.g. GitHub Pages)
+      try {
+        const res = await fetch("/api/parse-pdf", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            fileName: file.name,
+            mimeType: "application/pdf",
+            base64Data,
+          }),
+        });
 
-      const data = (await res.json()) as {
-        song?: ParsedSongPayload;
-        error?: string;
-      };
-
-      if (!res.ok || !data.song) {
-        throw new Error(data.error || "No se pudo leer el PDF.");
+        const contentType = res.headers.get("content-type") || "";
+        if (res.ok && contentType.includes("application/json")) {
+          const data = (await res.json()) as {
+            song?: ParsedSongPayload;
+          };
+          if (data.song) {
+            const hydrated = hydrateServerSong(data.song, "pdf");
+            onImportSong(hydrated);
+            onClose();
+            return;
+          }
+        }
+      } catch {
+        // Static host or offline backend -> fall through to client-side pdfjs parser
       }
 
-      const hydrated = hydrateServerSong(data.song, "pdf");
-      onImportSong(hydrated);
+      const localSong = await parsePdfLocally(file);
+      onImportSong(localSong);
       onClose();
     } catch (err: unknown) {
       setError(
@@ -139,13 +157,14 @@ export function ImportModal({
 
   const handleQuickPasteImport = () => {
     if (!pasteText.trim()) {
-      setError("Pega primero la letra o tablatura de tu canción.");
+      setError("Pega primero la letra, acordes o tablatura de tu canción.");
       return;
     }
     setError(null);
     const parsed = parseLaCuerdaText(pasteText, {
       title: pasteTitle,
       artist: pasteArtist,
+      originalKey: pasteKey,
     });
     onImportSong(parsed);
     onClose();
@@ -153,7 +172,7 @@ export function ImportModal({
 
   const handleAiPasteImport = async () => {
     if (!pasteText.trim()) {
-      setError("Pega primero la letra o tablatura de tu canción.");
+      setError("Pega primero la letra, acordes o tablatura de tu canción.");
       return;
     }
     setError(null);
@@ -164,22 +183,39 @@ export function ImportModal({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ rawText: pasteText }),
       });
-      const data = (await res.json()) as {
-        song?: ParsedSongPayload;
-        error?: string;
-      };
-      if (!res.ok || !data.song) {
-        throw new Error(data.error || "No se pudo estructurar el texto.");
+      const contentType = res.headers.get("content-type") || "";
+      if (res.ok && contentType.includes("application/json")) {
+        const data = (await res.json()) as {
+          song?: ParsedSongPayload;
+          error?: string;
+        };
+        if (data.song) {
+          const hydrated = hydrateServerSong(data.song, "lacuerda");
+          if (pasteTitle.trim()) hydrated.title = pasteTitle.trim();
+          if (pasteArtist.trim()) hydrated.artist = pasteArtist.trim();
+          if (pasteKey.trim()) hydrated.originalKey = pasteKey.trim();
+          onImportSong(hydrated);
+          onClose();
+          return;
+        }
       }
-      const hydrated = hydrateServerSong(data.song, "lacuerda");
-      if (pasteTitle.trim()) hydrated.title = pasteTitle.trim();
-      if (pasteArtist.trim()) hydrated.artist = pasteArtist.trim();
-      onImportSong(hydrated);
+
+      // Fallback on static host
+      const localParsed = parseLaCuerdaText(pasteText, {
+        title: pasteTitle,
+        artist: pasteArtist,
+        originalKey: pasteKey,
+      });
+      onImportSong(localParsed);
       onClose();
-    } catch (err: unknown) {
-      setError(
-        err instanceof Error ? err.message : "Error al analizar el texto."
-      );
+    } catch {
+      const localParsed = parseLaCuerdaText(pasteText, {
+        title: pasteTitle,
+        artist: pasteArtist,
+        originalKey: pasteKey,
+      });
+      onImportSong(localParsed);
+      onClose();
     } finally {
       setIsLoading(false);
     }
@@ -204,24 +240,40 @@ export function ImportModal({
           lyricsText: lyricsOnlyText,
         }),
       });
-      const data = (await res.json()) as {
-        song?: ParsedSongPayload;
-        error?: string;
-      };
-      if (!res.ok || !data.song) {
-        throw new Error(
-          data.error || "No se pudieron alinear los acordes con la letra."
-        );
+      const contentType = res.headers.get("content-type") || "";
+      if (res.ok && contentType.includes("application/json")) {
+        const data = (await res.json()) as {
+          song?: ParsedSongPayload;
+          error?: string;
+        };
+        if (data.song) {
+          const hydrated = hydrateServerSong(data.song, "lacuerda");
+          onImportSong(hydrated);
+          onClose();
+          return;
+        }
       }
-      const hydrated = hydrateServerSong(data.song, "lacuerda");
-      onImportSong(hydrated);
+
+      // Fallback on static host (GitHub Pages)
+      const localCombined = alignChordsAndLyricsLocally({
+        title: combineTitle,
+        artist: combineArtist,
+        originalKey: combineKey,
+        chordsText: chordsOnlyText,
+        lyricsText: lyricsOnlyText,
+      });
+      onImportSong(localCombined);
       onClose();
-    } catch (err: unknown) {
-      setError(
-        err instanceof Error
-          ? err.message
-          : "Error al combinar las notas y la letra."
-      );
+    } catch {
+      const localCombined = alignChordsAndLyricsLocally({
+        title: combineTitle,
+        artist: combineArtist,
+        originalKey: combineKey,
+        chordsText: chordsOnlyText,
+        lyricsText: lyricsOnlyText,
+      });
+      onImportSong(localCombined);
+      onClose();
     } finally {
       setIsLoading(false);
     }
@@ -282,7 +334,7 @@ export function ImportModal({
                 : "border-transparent text-slate-500 dark:text-zinc-400 hover:text-slate-900 dark:hover:text-zinc-200"
             }`}
           >
-            Pegar Letra / Tablatura
+            Pegar Tablatura / Letra
           </button>
           <button
             type="button"
@@ -311,9 +363,9 @@ export function ImportModal({
           {tab === "pdf" && (
             <div className="space-y-4">
               <p className="text-sm text-slate-600 dark:text-zinc-400">
-                Sube un PDF descargado de LaCuerda, Ultimate Guitar o tu
-                cancionero personal. Extraemos letra, secciones y la posición
-                exacta de cada acorde para poder transportarlos a tu voz.
+                Sube un PDF de LaCuerda, Ultimate Guitar o tu cancionero.
+                Detecta letra, acordes encima de cada sílaba y tablaturas de
+                guitarra.
               </p>
 
               <div
@@ -349,10 +401,7 @@ export function ImportModal({
                   <div className="flex flex-col items-center gap-3">
                     <Loader2 className="w-8 h-8 text-amber-500 animate-spin" />
                     <p className="text-sm font-medium text-slate-800 dark:text-zinc-200">
-                      Leyendo acordes y letra del PDF...
-                    </p>
-                    <p className="text-xs text-slate-500 dark:text-zinc-400">
-                      Alineando columnas y secciones automáticamente.
+                      Leyendo acordes, tablaturas y letra del PDF...
                     </p>
                   </div>
                 ) : (
@@ -363,7 +412,7 @@ export function ImportModal({
                         Arrastra tu PDF aquí o haz clic para buscarlo
                       </p>
                       <p className="mt-1 text-xs text-slate-500 dark:text-zinc-400">
-                        Compatible con cifrado americano (C, G, Am) y latino (Do, Sol, Lam)
+                        Compatible con cifrado americano (C, G, Am), latino (Do, Sol, Lam) y tablaturas
                       </p>
                     </div>
                   </div>
@@ -375,11 +424,13 @@ export function ImportModal({
           {tab === "paste" && (
             <div className="space-y-4">
               <p className="text-sm text-slate-600 dark:text-zinc-400">
-                Pega letra y acordes copiados desde cualquier aplicación (LaCuerda,
-                Notas, WhatsApp o tablaturas propias).
+                Pega tu tablatura completa (con acordes y/o cuerdas{" "}
+                <code className="font-mono text-xs">e|---|</code>) o pega solo
+                la letra y elige la escala base abajo para ver las notas del
+                tono.
               </p>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                 <input
                   type="text"
                   value={pasteTitle}
@@ -394,13 +445,20 @@ export function ImportModal({
                   placeholder="Artista (opcional)"
                   className="px-3 py-2 text-sm rounded-lg bg-slate-50 dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 text-slate-900 dark:text-zinc-100 focus:outline-none focus:border-amber-500"
                 />
+                <input
+                  type="text"
+                  value={pasteKey}
+                  onChange={(e) => setPasteKey(e.target.value)}
+                  placeholder="Escala / Tono (ej. G, Lam)"
+                  className="px-3 py-2 text-sm font-mono rounded-lg bg-slate-50 dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 text-slate-900 dark:text-zinc-100 focus:outline-none focus:border-amber-500"
+                />
               </div>
 
               <textarea
                 rows={9}
                 value={pasteText}
                 onChange={(e) => setPasteText(e.target.value)}
-                placeholder={`Ejemplo:\n[Verso 1]\nDo              Sol7\nDe la Sierra Morena, cielito lindo\n                  Do\nvienen bajando...`}
+                placeholder={`Ejemplo con tablatura y acordes:\n[Intro]\ne|---0---2---3---|\nB|---1---3---3---|\n\n[Verso 1]\nDo              Sol7\nDe la Sierra Morena, cielito lindo`}
                 className="w-full p-3 font-mono text-xs sm:text-sm rounded-lg bg-slate-50 dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 text-slate-900 dark:text-zinc-100 focus:outline-none focus:border-amber-500"
               />
 
@@ -424,7 +482,7 @@ export function ImportModal({
                   ) : (
                     <Sparkles className="w-4 h-4" />
                   )}
-                  Estructurar con IA
+                  Estructurar
                 </button>
               </div>
             </div>
@@ -433,7 +491,7 @@ export function ImportModal({
           {tab === "combine" && (
             <div className="space-y-4">
               <p className="text-sm text-slate-600 dark:text-zinc-400">
-                ¿Tienes los acordes anotados aparte y copiaste solo la letra en
+                ¿Tienes tus acordes o tablatura aparte y copiaste la letra en
                 otra app? Pega cada parte por separado y las alineamos en una
                 hoja lista para cantar.
               </p>
@@ -457,15 +515,15 @@ export function ImportModal({
                   type="text"
                   value={combineKey}
                   onChange={(e) => setCombineKey(e.target.value)}
-                  placeholder="Tono base (ej. Sol, Am)"
-                  className="px-3 py-2 text-sm rounded-lg bg-slate-50 dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 text-slate-900 dark:text-zinc-100 focus:outline-none focus:border-amber-500"
+                  placeholder="Escala base (ej. Sol, Am)"
+                  className="px-3 py-2 text-sm font-mono rounded-lg bg-slate-50 dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 text-slate-900 dark:text-zinc-100 focus:outline-none focus:border-amber-500"
                 />
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div className="space-y-1.5">
                   <label className="block text-xs font-medium text-slate-700 dark:text-zinc-300">
-                    Tus notas / progresión de acordes
+                    Tus acordes / tablatura
                   </label>
                   <textarea
                     rows={8}

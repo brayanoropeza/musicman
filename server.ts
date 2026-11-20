@@ -73,7 +73,18 @@ const songResponseSchema = {
                 },
                 isInstrumental: {
                   type: Type.BOOLEAN,
-                  description: "true si la línea es solo instrumental (intro, solo, interludio de acordes sin canto).",
+                  description: "true si la línea es solo instrumental (intro, solo, interludio o tablatura sin canto).",
+                },
+                isTablature: {
+                  type: Type.BOOLEAN,
+                  description: "true si la línea contiene un bloque de tablatura ASCII de guitarra/bajo (e|---, B|---, G|---, etc.).",
+                },
+                tabLines: {
+                  type: Type.ARRAY,
+                  description: "Líneas de tablatura ASCII agrupadas (ej. las 6 cuerdas e, B, G, D, A, E) cuando isTablature es true.",
+                  items: {
+                    type: Type.STRING,
+                  },
                 },
                 chords: {
                   type: Type.ARRAY,

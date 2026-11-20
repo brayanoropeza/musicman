@@ -13,6 +13,7 @@ import {
   InstrumentProfile,
   NotationSystem,
   Song,
+  StageDisplayMode,
   TrackingMode,
 } from "./types/song";
 import { flattenSongLines } from "./utils/chords";
@@ -23,6 +24,8 @@ const STORAGE_PREFS_KEY = "atrilvivo_prefs_v1";
 
 interface SavedPrefs {
   notation: NotationSystem;
+  displayMode: StageDisplayMode;
+  showScaleGuide: boolean;
   fontSizePx: number;
   isDarkMode: boolean;
   instrumentProfile: InstrumentProfile;
@@ -32,6 +35,8 @@ interface SavedPrefs {
 
 const DEFAULT_PREFS: SavedPrefs = {
   notation: "american",
+  displayMode: "chords_tabs",
+  showScaleGuide: true,
   fontSizePx: 28,
   isDarkMode: true,
   instrumentProfile: "acoustic_guitar",
@@ -337,6 +342,17 @@ export default function App() {
                 notation={prefs.notation}
                 onChangeNotation={(notation) =>
                   setPrefs((p) => ({ ...p, notation }))
+                }
+                displayMode={prefs.displayMode}
+                onChangeDisplayMode={(displayMode) =>
+                  setPrefs((p) => ({ ...p, displayMode }))
+                }
+                showScaleGuide={prefs.showScaleGuide}
+                onToggleScaleGuide={() =>
+                  setPrefs((p) => ({
+                    ...p,
+                    showScaleGuide: !p.showScaleGuide,
+                  }))
                 }
                 fontSizePx={prefs.fontSizePx}
                 onChangeFontSize={(fontSizePx) =>
